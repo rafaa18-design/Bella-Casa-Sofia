@@ -17,8 +17,15 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ''
 
     # Agent configuration
-    AGENT_INSTRUCTIONS: str = 'You are a helpful AI assistant.'
+    AGENT_PROMPT_NAME: str = 'agent-instructions'
+    AGENT_INSTRUCTIONS_FALLBACK: str = 'You are a helpful AI assistant.'
     MAX_TURNS: int = 10
+
+    # Langfuse configuration
+    LANGFUSE_PUBLIC_KEY: str = ''
+    LANGFUSE_SECRET_KEY: str = ''
+    LANGFUSE_BASE_URL: str = 'https://cloud.langfuse.com'
+    LANGFUSE_ENABLED: bool = True
 
     # Server configuration
     HOST: str = '0.0.0.0'

@@ -4,13 +4,19 @@ FastAPI application exposing the three required AgentBench endpoints:
 - GET /metadata - Module capabilities and configuration
 - POST /run - Production execution
 - POST /run_debug - Debug execution with full trajectory
+
+Integrates with Langfuse for observability and prompt management.
 """
+
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.responses import ORJSONResponse
 
 from app.agent import run_agent, run_agent_debug
 from app.config import settings
+from app.langfuse_client import get_langfuse
+from app.langfuse_client import shutdown as langfuse_shutdown
 from app.models import (
     Capabilities,
     InputTypes,
@@ -23,10 +29,22 @@ from app.models import (
     ToolExposed,
 )
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan handler."""
+    # Startup: initialize Langfuse
+    get_langfuse()
+    yield
+    # Shutdown: cleanup Langfuse
+    langfuse_shutdown()
+
+
 app = FastAPI(
     title=settings.MODULE_DESCRIPTION,
     version=settings.MODULE_VERSION,
     default_response_class=ORJSONResponse,
+    lifespan=lifespan,
 )
 
 

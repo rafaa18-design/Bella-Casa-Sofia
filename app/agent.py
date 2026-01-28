@@ -1,6 +1,7 @@
 """Agent module using Agno framework.
 
 This module creates and configures the AI agent following AgentBench standard.
+Integrates with Langfuse for observability and prompt management.
 """
 
 import time
@@ -10,6 +11,7 @@ from agno.models.anthropic import Claude
 from agno.models.openai import OpenAIChat
 
 from app.config import settings
+from app.langfuse_client import create_trace, flush, get_prompt
 from app.memory import memory
 from app.models import (
     ActionTaken,
@@ -17,6 +19,7 @@ from app.models import (
     FinalOutput,
     InputItem,
     LLMCall,
+    Metrics,
     PromptDebug,
     RunDebugResponse,
     RunResponse,
@@ -38,14 +41,24 @@ def get_model(model_id: str | None = None):
         return Claude(id=settings.DEFAULT_MODEL)
 
 
+def get_agent_instructions() -> str:
+    """Get agent instructions from Langfuse or fallback to config."""
+    return get_prompt(
+        name=settings.AGENT_PROMPT_NAME,
+        fallback=settings.AGENT_INSTRUCTIONS_FALLBACK,
+    )
+
+
 def create_agent(
-    model_id: str | None = None, session_id: str | None = None
+    model_id: str | None = None,
+    session_id: str | None = None,
+    instructions: str | None = None,
 ) -> Agent:
     """Create an Agno agent with the specified configuration."""
     return Agent(
         model=get_model(model_id),
         tools=[get_current_time, calculate],
-        instructions=settings.AGENT_INSTRUCTIONS,
+        instructions=instructions or get_agent_instructions(),
         add_history_to_context=True,
         session_id=session_id,
         markdown=True,
@@ -100,6 +113,20 @@ async def run_agent(
     """
     start_time = time.perf_counter()
 
+    # Get agent instructions from Langfuse
+    instructions = get_agent_instructions()
+
+    # Create Langfuse trace
+    trace = create_trace(
+        name='agent-run',
+        session_id=conversation_id,
+        metadata={
+            'model': model or settings.DEFAULT_MODEL,
+            'module_id': settings.MODULE_ID,
+        },
+        tags=['production', 'run'],
+    )
+
     # Get or create conversation
     conv = memory.get_or_create(conversation_id)
 
@@ -107,7 +134,11 @@ async def run_agent(
     user_message = build_input_message(items)
 
     # Create agent with session for conversation continuity
-    agent = create_agent(model_id=model, session_id=conversation_id)
+    agent = create_agent(
+        model_id=model,
+        session_id=conversation_id,
+        instructions=instructions,
+    )
 
     # Run the agent
     response: RunOutput = await agent.arun(user_message)
@@ -122,8 +153,22 @@ async def run_agent(
     if hasattr(response, 'metrics') and response.metrics:
         tokens_used = getattr(response.metrics, 'total_tokens', None)
 
+    # Update trace with output
+    if trace:
+        trace.update(
+            input={'message': user_message},
+            output={'response': response.content or ''},
+            metadata={
+                'latency_ms': latency_ms,
+                'tokens_used': tokens_used,
+            },
+        )
+
     # Extract actions
     actions = extract_actions_from_response(response)
+
+    # Flush Langfuse events
+    flush()
 
     return RunResponse(
         conversation_id=conversation_id,
@@ -132,11 +177,11 @@ async def run_agent(
             state=conv.state if conv.state else None,
             actions_taken=actions if actions else None,
         ),
-        metrics={
-            'latency_ms': latency_ms,
-            'tokens_used': tokens_used,
-            'cost_estimate': None,
-        },
+        metrics=Metrics(
+            latency_ms=latency_ms,
+            tokens_used=tokens_used,
+            cost_estimate=None,
+        ),
     )
 
 
@@ -157,6 +202,21 @@ async def run_agent_debug(
     """
     start_time = time.perf_counter()
 
+    # Get agent instructions from Langfuse
+    instructions = get_agent_instructions()
+
+    # Create Langfuse trace
+    trace = create_trace(
+        name='agent-run-debug',
+        session_id=conversation_id,
+        metadata={
+            'model': model or settings.DEFAULT_MODEL,
+            'module_id': settings.MODULE_ID,
+            'debug': True,
+        },
+        tags=['debug', 'run_debug'],
+    )
+
     # Get or create conversation
     conv = memory.get_or_create(conversation_id)
 
@@ -164,7 +224,11 @@ async def run_agent_debug(
     user_message = build_input_message(items)
 
     # Create agent
-    agent = create_agent(model_id=model, session_id=conversation_id)
+    agent = create_agent(
+        model_id=model,
+        session_id=conversation_id,
+        instructions=instructions,
+    )
 
     # Run the agent
     response: RunOutput = await agent.arun(user_message)
@@ -183,6 +247,18 @@ async def run_agent_debug(
         input_tokens = getattr(response.metrics, 'input_tokens', 0) or 0
         output_tokens = getattr(response.metrics, 'output_tokens', 0) or 0
 
+    # Update trace with output
+    if trace:
+        trace.update(
+            input={'message': user_message},
+            output={'response': response.content or ''},
+            metadata={
+                'latency_ms': latency_ms,
+                'input_tokens': input_tokens,
+                'output_tokens': output_tokens,
+            },
+        )
+
     # Build trajectory (single stage for monolithic agent)
     trajectory = [
         TrajectoryStage(
@@ -190,7 +266,7 @@ async def run_agent_debug(
             type='agent',
             sequence=1,
             prompt_debug=PromptDebug(
-                final_system_prompt_used=settings.AGENT_INSTRUCTIONS,
+                final_system_prompt_used=instructions,
             ),
             llm_calls=[
                 LLMCall(
@@ -205,6 +281,9 @@ async def run_agent_debug(
 
     # Extract actions
     actions = extract_actions_from_response(response)
+
+    # Flush Langfuse events
+    flush()
 
     return RunDebugResponse(
         conversation_id=conversation_id,
