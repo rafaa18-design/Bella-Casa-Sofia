@@ -16,8 +16,20 @@ from agno.models.openai import OpenAIChat
 from app.config import settings
 from app.prompt_manager import get_agent_instructions_sync
 from app.storage import get_redis_db
-from app.tools import (add_to_list, calculate, check_threshold, format_date,
-                       generate_uuid, get_current_time)
+from app.tools import (
+    agendar_consulta,
+    buscar_paciente,
+    calcular_orcamento,
+    cancelar_consulta,
+    consultar_convenios,
+    consultar_historico_paciente,
+    listar_servicos,
+    salvar_dados_cliente,
+    salvar_preferencias,
+    ver_contexto_sessao,
+    verificar_cliente,
+    verificar_disponibilidade,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -105,14 +117,20 @@ def create_agent(
         description=settings.AGENT_DESCRIPTION,
         # Model configuration
         model=get_model(model_id),
-        # Tools (including examples demonstrating RetryAgentRun and StopAgentRun)
+        # Tools - Clínica Odontológica
         tools=[
-            get_current_time,
-            calculate,
-            generate_uuid,
-            format_date,
-            add_to_list,  # Demonstrates RetryAgentRun with session state
-            check_threshold,  # Demonstrates StopAgentRun
+            listar_servicos,
+            verificar_disponibilidade,
+            agendar_consulta,
+            cancelar_consulta,
+            buscar_paciente,
+            verificar_cliente,
+            consultar_historico_paciente,
+            consultar_convenios,
+            calcular_orcamento,
+            salvar_dados_cliente,
+            salvar_preferencias,
+            ver_contexto_sessao,
         ],
         # Instructions (can be dynamic from Langfuse)
         instructions=instructions or get_agent_instructions(),

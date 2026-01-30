@@ -1,13 +1,11 @@
 # =============================================================================
-# Asani AI Agent Template - Docker Compose
+# Asani AI Agent Template - Production
 # =============================================================================
-# Agent service with local Redis and Cloudflare Tunnel
+# Only the agent. Redis and PostgreSQL are external services in production.
+# Usage: docker compose up -d
 # =============================================================================
 
 services:
-  # ---------------------------------------------------------------------------
-  # Agent Service
-  # ---------------------------------------------------------------------------
   agent:
     build:
       context: .
@@ -19,10 +17,6 @@ services:
     environment:
       - HOST=0.0.0.0
       - PORT=8000
-      - REDIS_URL=redis://redis:6379
-    depends_on:
-      redis:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s

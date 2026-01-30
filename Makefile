@@ -3,6 +3,7 @@
 # =============================================================================
 
 .PHONY: help install dev test lint format run docker-build docker-up docker-down \
+        dev-up dev-down \
         migrate migrate-up migrate-down migrate-new migrate-history migrate-current \
         agno-migrate clean
 
@@ -31,10 +32,14 @@ help:
 	@echo "Agno Migrations:"
 	@echo "  make agno-migrate   Run Agno schema migrations (sessions, memories, etc.)"
 	@echo ""
-	@echo "Docker:"
+	@echo "Docker (production):"
 	@echo "  make docker-build   Build Docker image"
-	@echo "  make docker-up      Start services with docker-compose"
-	@echo "  make docker-down    Stop docker-compose services"
+	@echo "  make docker-up      Start production agent"
+	@echo "  make docker-down    Stop production agent"
+	@echo ""
+	@echo "Docker (development):"
+	@echo "  make dev-up         Start agent + Redis + Chat UI"
+	@echo "  make dev-down       Stop development services"
 	@echo ""
 	@echo "Cleanup:"
 	@echo "  make clean          Remove cache files and build artifacts"
@@ -122,6 +127,12 @@ docker-up:
 
 docker-down:
 	docker compose down
+
+dev-up:
+	docker compose -f docker-compose.dev.yml up -d --build
+
+dev-down:
+	docker compose -f docker-compose.dev.yml down
 
 # =============================================================================
 # Cleanup

@@ -71,6 +71,7 @@ A documentação detalhada está organizada em `docs/`. **Leia o arquivo apropri
 | Arquivo | Quando Ler |
 |---------|------------|
 | [docs/agentbench.md](docs/agentbench.md) | Entender o contrato AgentBench, endpoints `/metadata`, `/run`, `/run_debug` |
+| [docs/prompts.md](docs/prompts.md) | Escrever system prompts eficazes, seções obrigatórias, frameworks (TIDD-EC, RISEN), anti-padrões, otimização iterativa |
 | [docs/tools.md](docs/tools.md) | Criar ferramentas, structured output, JSON mode, error handling, hooks em tools |
 | [docs/agente.md](docs/agente.md) | Configurar o agente, modelos, providers (Anthropic, OpenAI, Vertex AI), input/output multimodal |
 | [docs/storage.md](docs/storage.md) | Session state, memórias, histórico, backends (PostgreSQL, SQLite) |
@@ -126,9 +127,12 @@ A documentação detalhada está organizada em `docs/`. **Leia o arquivo apropri
 
 ### Criar uma nova ferramenta (tool)
 
-Leia [docs/tools.md](docs/tools.md). Edite `app/tools/__init__.py`:
+Leia [docs/tools.md](docs/tools.md). Cada tool fica em seu próprio arquivo:
+
+1. Crie `app/tools/minha_tool.py`:
 
 ```python
+"""Tool: minha_tool — Descrição breve."""
 from agno.tools import tool
 from agno.exceptions import RetryAgentRun
 
@@ -140,7 +144,10 @@ def minha_tool(parametro: str) -> str:
     return resultado
 ```
 
-Registre em `app/agent.py` na lista `tools=[]`.
+2. Registre em `app/tools/__init__.py` (re-export) e em `app/agent.py` na lista `tools=[]`.
+
+> **⚠️ Dados mockados (`_mock_data.py`) são APENAS para desenvolvimento.**
+> Em produção, substitua por integrações reais (APIs, banco de dados, serviços externos).
 
 ### Modificar configuração do agente
 
@@ -171,6 +178,52 @@ agent = Agent(
     add_history_to_context=True,
 )
 ```
+
+### Gerenciar dados que devem ser lembrados (contexto pequeno)
+
+Leia [docs/state.md](docs/state.md) seção "Memória Persistente com Contexto Pequeno".
+
+**Problema**: Com `NUM_HISTORY_RUNS=3`, o agente esquece o que foi dito nos primeiros turnos.
+
+**Solução em 3 partes**:
+
+1. **Tools de memória** — O agente salva dados no session_state via tools:
+```python
+# Dados permanentes do cliente (nome, CPF, convênio)
+salvar_dados_cliente(run_context, nome="João", convenio="OdontoPrev")
+
+# Preferências temporárias (horários, dentista, alergias)
+salvar_preferencias(run_context, chave="horario_preferido", valor="manhã")
+
+# Consultar dados salvos
+ver_contexto_sessao(run_context)
+```
+
+2. **Injeção de contexto** — Em `app/main.py`, antes de criar o agente:
+```python
+from app.tools import formatar_contexto_state
+
+state_context = formatar_contexto_state(session_state)
+if state_context:
+    instructions = instructions + state_context
+```
+Isso adiciona às instructions:
+```
+--- CONTEXTO DA SESSÃO (dados já coletados, NÃO pergunte novamente) ---
+DADOS DO CLIENTE ATUAL: nome: João | convenio: OdontoPrev
+PREFERÊNCIAS DO CLIENTE: horario_preferido: manhã
+--- FIM DO CONTEXTO ---
+```
+
+3. **Instruções no prompt** — O prompt do agente DEVE instruir a usar as tools:
+```
+GESTÃO DE MEMÓRIA (CRÍTICO):
+- SEMPRE use salvar_dados_cliente quando o paciente informar dados pessoais
+- SEMPRE use salvar_preferencias para horários, alergias, observações
+- Se o CONTEXTO DA SESSÃO estiver presente, NÃO pergunte novamente
+```
+
+**Arquivos envolvidos**: `app/tools/__init__.py` (tools + `formatar_contexto_state`), `app/main.py` (injeção), `.env` (prompt)
 
 ### Implementar RAG/Knowledge
 

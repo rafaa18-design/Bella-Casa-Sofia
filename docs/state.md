@@ -314,6 +314,152 @@ agent.run("Continue our chat", session_id=response.session_id)
 
 ---
 
+## Memória Persistente com Contexto Pequeno
+
+### O Problema
+
+Quando `NUM_HISTORY_RUNS` é baixo (ex: 3), o agente "esquece" informações das primeiras mensagens da conversa. Dados como nome do paciente, convênio e preferências se perdem após 3 turnos.
+
+### A Solução: State + Injeção de Contexto
+
+O template resolve isso com uma arquitetura de 3 camadas:
+
+```
+┌─────────────────────────────────────────────┐
+│                INSTRUCTIONS                 │
+│  (prompt base + contexto da sessão injetado)│
+├─────────────────────────────────────────────┤
+│             HISTORY (últimos N runs)        │
+├─────────────────────────────────────────────┤
+│              SESSION STATE (Redis)          │
+│  • cliente: {nome, convenio, telefone, ...} │
+│  • preferencias: {horario, dentista, ...}   │
+│  • agendamentos: [...]                      │
+└─────────────────────────────────────────────┘
+```
+
+**Como funciona:**
+
+1. **Tools de estado** (`salvar_dados_cliente`, `salvar_preferencias`) gravam no `session_state`
+2. O `session_state` é persistido no Redis entre runs
+3. A cada novo run, `formatar_contexto_state()` gera um resumo textual do state
+4. Esse resumo é **injetado nas instructions** do agente antes de criar a instância
+5. O agente sempre "vê" os dados, mesmo que o histórico de mensagens já tenha rolado
+
+### Tools de Memória
+
+```python
+from agno.tools import tool
+from agno.run import RunContext
+
+@tool
+def salvar_dados_cliente(
+    run_context: RunContext,
+    nome: str,
+    paciente_id: str = "",
+    telefone: str = "",
+    email: str = "",
+    convenio: str = "",
+    cpf: str = "",
+) -> str:
+    """Salva dados cadastrais do cliente. Campos vazios não sobrescrevem."""
+    state = run_context.session_state or {}
+    if "cliente" not in state:
+        state["cliente"] = {}
+    if nome:
+        state["cliente"]["nome"] = nome
+    if convenio:
+        state["cliente"]["convenio"] = convenio
+    # ... outros campos
+    run_context.session_state = state
+    return "Dados salvos."
+
+@tool
+def salvar_preferencias(
+    run_context: RunContext,
+    chave: str,
+    valor: str,
+) -> str:
+    """Salva preferência temporária (horário, dentista, alergias, etc.)."""
+    state = run_context.session_state or {}
+    if "preferencias" not in state:
+        state["preferencias"] = {}
+    state["preferencias"][chave] = {"valor": valor}
+    run_context.session_state = state
+    return f"Preferência salva: {chave} = {valor}"
+
+@tool
+def ver_contexto_sessao(run_context: RunContext) -> str:
+    """Recupera todos os dados e preferências da sessão atual."""
+    # Retorna resumo formatado do state
+    ...
+```
+
+### Injeção de Contexto em main.py
+
+```python
+from app.tools import formatar_contexto_state
+
+async def execute_agent(request, debug=False):
+    instructions = await get_agent_instructions()
+    session_state = await get_session_state(conversation_id)
+
+    # Injeta state nas instructions para o agente não esquecer
+    state_context = formatar_contexto_state(session_state)
+    if state_context:
+        instructions = instructions + state_context
+
+    agent = create_agent(
+        instructions=instructions,
+        session_id=conversation_id,
+        ...
+    )
+```
+
+O `formatar_contexto_state()` gera algo como:
+
+```
+--- CONTEXTO DA SESSÃO (dados já coletados, NÃO pergunte novamente) ---
+DADOS DO CLIENTE ATUAL: nome: João Pereira | convenio: OdontoPrev | telefone: (11) 98765-4321
+PREFERÊNCIAS DO CLIENTE: horario_preferido: manhã | dentista_preferido: Dra. Maria
+AGENDAMENTOS ATIVOS: CON-ABC123 - Limpeza em 2025-02-10 às 09:00 com Dra. Maria Silva
+--- FIM DO CONTEXTO ---
+```
+
+### Instruções para o LLM
+
+O prompt do agente DEVE incluir instruções de gestão de memória:
+
+```
+GESTÃO DE MEMÓRIA (CRÍTICO):
+- SEMPRE use salvar_dados_cliente quando o paciente informar nome, telefone, e-mail, CPF ou convênio
+- SEMPRE use salvar_preferencias quando o paciente mencionar horários preferidos, dentista preferido,
+  alergias, medos ou qualquer observação relevante
+- Use ver_contexto_sessao se precisar relembrar dados já coletados
+- Se o CONTEXTO DA SESSÃO estiver presente nas instruções, use esses dados e NÃO pergunte novamente
+- Ao agendar, use os dados do cliente já salvos no contexto da sessão
+```
+
+### Quando Usar Cada Tipo
+
+| Tipo | Onde Armazenar | Duração | Exemplo |
+|------|---------------|---------|---------|
+| **Dados permanentes** | `session_state["cliente"]` via `salvar_dados_cliente` | Toda a sessão | Nome, CPF, convênio, telefone |
+| **Preferências temporárias** | `session_state["preferencias"]` via `salvar_preferencias` | Toda a sessão | Horário preferido, dentista preferido, alergias |
+| **Dados de operação** | `session_state["agendamentos"]` via tool específica | Toda a sessão | Consultas agendadas/canceladas |
+| **Contexto conversacional** | History (automático) | Últimos N runs | O que foi dito recentemente |
+
+### Configuração Recomendada
+
+```bash
+# Em .env
+NUM_HISTORY_RUNS=3           # Contexto conversacional curto (economia de tokens)
+ENABLE_USER_MEMORIES=true    # Agno salva memórias do usuário automaticamente
+ENABLE_SESSION_SUMMARIES=true # Agno resume sessões anteriores
+```
+
+---
+
 ## Boas Práticas
 
 | Prática | Descrição |
@@ -323,6 +469,9 @@ agent.run("Continue our chat", session_id=response.session_id)
 | **Valide tipos** | O state pode ser modificado por tools, valide antes de usar |
 | **Limpe dados sensíveis** | Não persista senhas ou tokens no state |
 | **Use IDs consistentes** | Mantenha padrão para session_id e user_id |
+| **Salve dados cedo** | Use `salvar_dados_cliente` assim que o paciente informar dados |
+| **Instrua o LLM** | O prompt DEVE dizer ao agente para usar as tools de memória |
+| **Injete contexto** | Use `formatar_contexto_state` para dados sobreviverem ao history rolloff |
 
 ---
 

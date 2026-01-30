@@ -4,28 +4,132 @@ Este documento cobre a criação de ferramentas, saída estruturada e tratamento
 
 ---
 
-## Estrutura Básica
+## Estrutura de Arquivos
 
-Ferramentas são funções Python com docstrings que o LLM pode chamar:
+Cada tool deve ficar em seu próprio arquivo dentro de `app/tools/`. O `__init__.py` re-exporta todas as tools.
+
+```
+app/tools/
+├── __init__.py              # Re-exports de todas as tools + __all__
+├── _mock_data.py            # Dados mockados compartilhados (APENAS para desenvolvimento)
+├── _helpers.py              # Funções auxiliares (ensure_state, etc.)
+├── formatar_contexto.py     # Helper para injeção de contexto (não é tool)
+├── listar_servicos.py       # Uma tool por arquivo
+├── verificar_disponibilidade.py
+├── agendar_consulta.py
+├── cancelar_consulta.py
+├── buscar_paciente.py
+├── consultar_historico.py
+├── consultar_convenios.py
+├── calcular_orcamento.py
+├── salvar_dados_cliente.py
+├── salvar_preferencias.py
+└── ver_contexto_sessao.py
+```
+
+> **⚠️ Dados Mockados são APENAS para Desenvolvimento**
+>
+> O arquivo `_mock_data.py` contém dados fictícios para permitir testes do pipeline
+> completo (auth, metrics, tracing, state, etc.) sem dependências externas.
+> **Em produção, cada tool deve consultar APIs reais, bancos de dados ou serviços externos.**
+> Remova `_mock_data.py` e atualize cada tool para usar a fonte de dados real,
+> mantendo a mesma interface (assinatura e retorno).
+
+### Criando uma Nova Tool
+
+1. Crie um arquivo em `app/tools/minha_tool.py`:
 
 ```python
-# app/tools/__init__.py
+# app/tools/minha_tool.py
+"""Tool: minha_tool — Descrição breve."""
 
-def minha_ferramenta(parametro: str) -> str:
-    """Descrição curta da ferramenta para o LLM.
+from agno.tools import tool
+from agno.exceptions import RetryAgentRun
+
+
+@tool
+def minha_tool(parametro: str) -> str:
+    """Descrição da ferramenta para o LLM.
+
+    O LLM usa esta docstring para decidir quando chamar a tool.
+    Seja claro sobre quando e como usar.
 
     Args:
-        parametro (str): Descrição do parâmetro.
+        parametro: Descrição do parâmetro.
 
     Returns:
-        str: Descrição do retorno.
+        Resultado formatado.
     """
+    if not parametro:
+        raise RetryAgentRun("Parâmetro obrigatório. Informe o valor.")
     return f"Resultado: {parametro}"
 ```
 
+2. Registre no `app/tools/__init__.py`:
+
+```python
+from app.tools.minha_tool import minha_tool
+
+__all__ = [
+    # ... tools existentes
+    "minha_tool",
+]
+```
+
+3. Adicione à lista de tools em `app/agent.py`:
+
+```python
+from app.tools import minha_tool
+
+def create_agent(...) -> Agent:
+    return Agent(
+        tools=[
+            # ... tools existentes
+            minha_tool,
+        ],
+    )
+```
+
+### Tool com Acesso ao Session State
+
+Se a tool precisa ler/escrever dados na sessão:
+
+```python
+# app/tools/salvar_nota.py
+"""Tool: salvar_nota — Salva anotação na sessão."""
+
+from agno.run import RunContext
+from agno.tools import tool
+
+from app.tools._helpers import ensure_state
+
+
+@tool
+def salvar_nota(run_context: RunContext, nota: str) -> str:
+    """Salva uma anotação na sessão atual.
+
+    Args:
+        nota: Texto da anotação.
+
+    Returns:
+        Confirmação.
+    """
+    state = ensure_state(run_context)
+    if "notas" not in state:
+        state["notas"] = []
+    state["notas"].append(nota)
+    return f"Nota salva: {nota}"
+```
+
+### Helpers e Dados Compartilhados
+
+- **`_helpers.py`**: Funções auxiliares usadas por múltiplas tools (ex: `ensure_state`, geradores de ID)
+- **`_mock_data.py`**: Dados de desenvolvimento. Em produção, remova e substitua por dados reais
+- **`formatar_contexto.py`**: Formatação de state para injeção no prompt (usado por `main.py`, não é tool)
+
 ---
 
-## Com Decorator @tool
+## Decorator @tool
 
 Use o decorator para opções avançadas:
 
@@ -69,25 +173,6 @@ def obter_perfil_usuario(run_context: RunContext) -> str:
     user_id = run_context.user_id
     profiles = run_context.dependencies.get("user_profiles", {})
     return profiles.get(user_id, "Perfil não encontrado")
-```
-
----
-
-## Registrando Ferramentas
-
-```python
-# app/agent.py
-from app.tools import minha_ferramenta, buscar_clima, adicionar_item
-
-def create_agent(...) -> Agent:
-    return Agent(
-        model=get_model(model_id),
-        tools=[
-            minha_ferramenta,
-            buscar_clima,
-            adicionar_item,
-        ],
-    )
 ```
 
 ---

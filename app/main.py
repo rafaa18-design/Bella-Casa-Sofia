@@ -56,9 +56,12 @@ from app.storage import close_redis  # noqa: E402
 from app.storage import (add_message_to_history, get_postgres_db, get_redis,
                          get_session_state, update_session_state)
 from app.tools import __all__ as tool_names  # noqa: E402
-from app.tools import check_threshold  # noqa: E402
-from app.tools import (add_to_list, calculate, format_date, generate_uuid,
-                       get_current_time)
+from app.tools import (agendar_consulta, buscar_paciente,  # noqa: E402
+                       calcular_orcamento, cancelar_consulta,
+                       consultar_convenios, consultar_historico_paciente,
+                       formatar_contexto_state, listar_servicos,
+                       salvar_dados_cliente, salvar_preferencias,
+                       ver_contexto_sessao, verificar_disponibilidade)
 
 logger = get_logger(__name__)
 
@@ -391,6 +394,13 @@ async def execute_agent(
             input_length=len(text_message),
         )
 
+        # Inject session state context into instructions
+        # This ensures the agent remembers client data and preferences
+        # even after history rolls off (NUM_HISTORY_RUNS limit)
+        state_context = formatar_contexto_state(session_state)
+        if state_context:
+            instructions = instructions + state_context
+
         # Create agent
         agent = create_agent(
             model_id=request.model,
@@ -486,12 +496,17 @@ agentbench_router = APIRouter(tags=['AgentBench'])
 
 # Registry of tools for introspection
 _TOOLS_REGISTRY = {
-    'get_current_time': get_current_time,
-    'calculate': calculate,
-    'generate_uuid': generate_uuid,
-    'format_date': format_date,
-    'add_to_list': add_to_list,
-    'check_threshold': check_threshold,
+    'listar_servicos': listar_servicos,
+    'verificar_disponibilidade': verificar_disponibilidade,
+    'agendar_consulta': agendar_consulta,
+    'cancelar_consulta': cancelar_consulta,
+    'buscar_paciente': buscar_paciente,
+    'consultar_historico_paciente': consultar_historico_paciente,
+    'consultar_convenios': consultar_convenios,
+    'calcular_orcamento': calcular_orcamento,
+    'salvar_dados_cliente': salvar_dados_cliente,
+    'salvar_preferencias': salvar_preferencias,
+    'ver_contexto_sessao': ver_contexto_sessao,
 }
 
 

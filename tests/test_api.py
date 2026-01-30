@@ -83,8 +83,10 @@ class TestAgentBenchEndpoints:
         tools = data['tools_exposed']
 
         tool_names = [t['name'] for t in tools]
-        assert 'get_current_time' in tool_names
-        assert 'calculate' in tool_names
+        assert 'listar_servicos' in tool_names
+        assert 'agendar_consulta' in tool_names
+        assert 'buscar_paciente' in tool_names
+        assert 'calcular_orcamento' in tool_names
 
     def test_run_endpoint_exists(self, auth_client):
         """Test /run endpoint exists and validates input."""

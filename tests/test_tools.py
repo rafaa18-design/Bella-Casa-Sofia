@@ -1,215 +1,34 @@
-"""Tests for custom tools demonstrating Agno exceptions."""
+"""Testes para as ferramentas de atendimento da clínica odontológica."""
 
 import pytest
 from agno.exceptions import RetryAgentRun, StopAgentRun
 from agno.run import RunContext
 
-# Import the tool wrappers and access the underlying functions
-from app.tools import (add_to_list, calculate, check_threshold, format_date,
-                       generate_uuid, get_current_time)
+from app.tools import (
+    agendar_consulta,
+    buscar_paciente,
+    calcular_orcamento,
+    cancelar_consulta,
+    consultar_convenios,
+    consultar_historico_paciente,
+    listar_servicos,
+    verificar_disponibilidade,
+)
 
 
 # Helper to get the actual callable function from Agno Function wrapper
 def call_tool(tool_func, *args, **kwargs):
     """Call a tool function, handling Agno Function wrapper."""
     if hasattr(tool_func, 'func'):
-        # Agno Function wrapper - call the underlying function
         return tool_func.func(*args, **kwargs)
     elif hasattr(tool_func, 'entrypoint'):
-        # Alternative wrapper structure
         return tool_func.entrypoint(*args, **kwargs)
     else:
-        # Direct function
         return tool_func(*args, **kwargs)
 
 
-class TestBasicTools:
-    """Tests for basic utility tools."""
-
-    def test_get_current_time(self):
-        """Test get_current_time returns ISO format."""
-        result = call_tool(get_current_time)
-        assert isinstance(result, str)
-        assert 'T' in result  # ISO format has T separator
-        assert result.endswith('+00:00') or result.endswith('Z')
-
-    def test_generate_uuid(self):
-        """Test generate_uuid returns valid UUID."""
-        result = call_tool(generate_uuid)
-        assert isinstance(result, str)
-        assert len(result) == 36  # UUID format: 8-4-4-4-12
-        assert result.count('-') == 4
-
-    def test_generate_uuid_unique(self):
-        """Test generate_uuid returns unique values."""
-        uuids = [call_tool(generate_uuid) for _ in range(10)]
-        assert len(set(uuids)) == 10  # All unique
-
-
-class TestCalculateTool:
-    """Tests for calculate tool with RetryAgentRun exceptions."""
-
-    def test_calculate_simple_addition(self):
-        """Test simple addition."""
-        assert call_tool(calculate, '2 + 2') == '4'
-
-    def test_calculate_multiplication(self):
-        """Test multiplication."""
-        assert call_tool(calculate, '10 * 5') == '50'
-
-    def test_calculate_division(self):
-        """Test division returns float when needed."""
-        assert call_tool(calculate, '10 / 4') == '2.5'
-
-    def test_calculate_integer_division(self):
-        """Test division returns integer when possible."""
-        assert call_tool(calculate, '10 / 2') == '5'
-
-    def test_calculate_complex_expression(self):
-        """Test complex expression."""
-        assert call_tool(calculate, '(2 + 3) * 4') == '20'
-
-    def test_calculate_power(self):
-        """Test power operator."""
-        assert call_tool(calculate, '2 ** 3') == '8'
-
-    def test_calculate_modulo(self):
-        """Test modulo operator."""
-        assert call_tool(calculate, '10 % 3') == '1'
-
-    def test_calculate_floor_division(self):
-        """Test floor division."""
-        assert call_tool(calculate, '10 // 3') == '3'
-
-    def test_calculate_negative(self):
-        """Test negative numbers."""
-        assert call_tool(calculate, '-5 + 3') == '-2'
-
-    def test_calculate_invalid_syntax_raises_retry(self):
-        """Test invalid syntax raises RetryAgentRun.
-
-        RetryAgentRun provides feedback to the model to adjust behavior
-        and retry the tool call within the current run.
-        """
-        with pytest.raises(RetryAgentRun) as exc_info:
-            call_tool(calculate, '2 +')
-        assert 'Invalid expression syntax' in str(exc_info.value)
-
-    def test_calculate_division_by_zero_raises_retry(self):
-        """Test division by zero raises RetryAgentRun.
-
-        The model receives this error and can adjust its approach.
-        """
-        with pytest.raises(RetryAgentRun) as exc_info:
-            call_tool(calculate, '10 / 0')
-        assert 'Division by zero' in str(exc_info.value)
-
-    def test_calculate_unsupported_operator_raises_retry(self):
-        """Test unsupported operators raise RetryAgentRun."""
-        # Bitwise operators are not supported
-        with pytest.raises(RetryAgentRun) as exc_info:
-            call_tool(calculate, '5 & 3')
-        assert 'Supported operators' in str(exc_info.value)
-
-
-class TestFormatDateTool:
-    """Tests for format_date tool with RetryAgentRun exceptions."""
-
-    def test_format_date_iso(self):
-        """Test formatting ISO date."""
-        result = call_tool(format_date, '2024-01-15')
-        assert result == '2024-01-15'
-
-    def test_format_date_with_time(self):
-        """Test formatting date with time."""
-        result = call_tool(format_date, '2024-01-15T10:30:00')
-        assert result == '2024-01-15'
-
-    def test_format_date_custom_output(self):
-        """Test custom output format."""
-        result = call_tool(format_date, '2024-01-15', '%d/%m/%Y')
-        assert result == '15/01/2024'
-
-    def test_format_date_from_slash_format(self):
-        """Test parsing slash format."""
-        result = call_tool(format_date, '15/01/2024')
-        assert result == '2024-01-15'
-
-    def test_format_date_with_microseconds(self):
-        """Test formatting date with microseconds."""
-        result = call_tool(format_date, '2024-01-15T10:30:00.123456')
-        assert result == '2024-01-15'
-
-    def test_format_date_invalid_raises_retry(self):
-        """Test invalid date raises RetryAgentRun.
-
-        RetryAgentRun gives feedback about supported formats
-        so the model can provide a correctly formatted date.
-        """
-        with pytest.raises(RetryAgentRun) as exc_info:
-            call_tool(format_date, 'not a date')
-        error_msg = str(exc_info.value)
-        assert 'Could not parse date' in error_msg
-        assert 'Supported formats' in error_msg
-
-    def test_format_date_partial_date_raises_retry(self):
-        """Test partial date raises RetryAgentRun."""
-        with pytest.raises(RetryAgentRun):
-            call_tool(format_date, '2024-01')  # Missing day
-
-
-class TestAgnoExceptionsDocumentation:
-    """Tests documenting how Agno exceptions work.
-
-    These tests serve as documentation for how RetryAgentRun and
-    StopAgentRun should be used in tools.
-    """
-
-    def test_retry_agent_run_is_exception(self):
-        """Verify RetryAgentRun is an exception that can be raised."""
-        assert issubclass(RetryAgentRun, Exception)
-
-    def test_stop_agent_run_is_exception(self):
-        """Verify StopAgentRun is an exception that can be raised."""
-        assert issubclass(StopAgentRun, Exception)
-
-    def test_retry_agent_run_with_message(self):
-        """Test RetryAgentRun can be created with a message."""
-        exc = RetryAgentRun('Please try a different input')
-        assert 'different input' in str(exc)
-
-    def test_stop_agent_run_with_message(self):
-        """Test StopAgentRun can be created with a message."""
-        exc = StopAgentRun('Threshold exceeded, stopping')
-        assert 'Threshold exceeded' in str(exc)
-
-    def test_retry_vs_stop_purpose(self):
-        """Document the different purposes of the exceptions.
-
-        RetryAgentRun: Feedback to model within current run's tool call loop.
-                       The model can adjust and retry.
-
-        StopAgentRun:  Immediately exits the tool call loop.
-                       The run completes with COMPLETED status.
-        """
-        # Both are exceptions that can be raised in tools
-        retry = RetryAgentRun('Validation failed, please adjust')
-        stop = StopAgentRun('Critical condition reached')
-
-        # They carry messages for the model/user
-        assert str(retry)
-        assert str(stop)
-
-
 def create_run_context(session_state: dict | None = None) -> RunContext:
-    """Create a RunContext for testing tools.
-
-    Args:
-        session_state: Initial session state (default: None).
-
-    Returns:
-        A RunContext instance for testing.
-    """
+    """Create a RunContext for testing tools."""
     return RunContext(
         run_id='test-run-id',
         session_id='test-session-id',
@@ -217,165 +36,386 @@ def create_run_context(session_state: dict | None = None) -> RunContext:
     )
 
 
-class TestAddToListTool:
-    """Tests for add_to_list tool with RunContext."""
-
-    def test_add_to_list_initializes_state(self):
-        """Test that add_to_list initializes session state if None."""
-        context = create_run_context(session_state=None)
-
-        with pytest.raises(RetryAgentRun) as exc_info:
-            call_tool(add_to_list, context, 'item1')
-
-        # Session state should now be initialized
-        assert context.session_state is not None
-        assert 'items' in context.session_state
-        assert 'item1' in context.session_state['items']
-        assert 'Minimum 3 items required' in str(exc_info.value)
-
-    def test_add_to_list_requires_minimum_items(self):
-        """Test that add_to_list requires minimum 3 items."""
-        context = create_run_context(session_state={})
-
-        # First item - should raise RetryAgentRun
-        with pytest.raises(RetryAgentRun) as exc_info:
-            call_tool(add_to_list, context, 'item1')
-        assert '1 items' in str(exc_info.value)
-        assert 'add 2 more' in str(exc_info.value)
-
-        # Second item - should raise RetryAgentRun
-        with pytest.raises(RetryAgentRun) as exc_info:
-            call_tool(add_to_list, context, 'item2')
-        assert '2 items' in str(exc_info.value)
-        assert 'add 1 more' in str(exc_info.value)
-
-        # Third item - should succeed
-        result = call_tool(add_to_list, context, 'item3')
-        assert 'complete with 3 items' in result
-        assert "['item1', 'item2', 'item3']" in result
-
-    def test_add_to_list_custom_list_name(self):
-        """Test add_to_list with custom list name."""
-        context = create_run_context(session_state={})
-
-        # Add to custom list
-        with pytest.raises(RetryAgentRun):
-            call_tool(add_to_list, context, 'a', list_name='custom')
-        with pytest.raises(RetryAgentRun):
-            call_tool(add_to_list, context, 'b', list_name='custom')
-
-        result = call_tool(add_to_list, context, 'c', list_name='custom')
-        assert '"custom" is complete' in result
-        assert 'custom' in context.session_state
-
-    def test_add_to_list_multiple_lists(self):
-        """Test add_to_list can manage multiple lists."""
-        context = create_run_context(session_state={})
-
-        # Add to default list
-        with pytest.raises(RetryAgentRun):
-            call_tool(add_to_list, context, 'default1')
-
-        # Add to another list
-        with pytest.raises(RetryAgentRun):
-            call_tool(add_to_list, context, 'other1', list_name='other')
-
-        # Both lists should exist independently
-        assert 'items' in context.session_state
-        assert 'other' in context.session_state
-        assert context.session_state['items'] == ['default1']
-        assert context.session_state['other'] == ['other1']
+# =============================================================================
+# Listar Serviços
+# =============================================================================
 
 
-class TestCheckThresholdTool:
-    """Tests for check_threshold tool with StopAgentRun."""
+class TestListarServicos:
+    """Testes para listar_servicos."""
 
-    def test_check_threshold_within_limit(self):
-        """Test value within threshold returns success."""
-        context = create_run_context(session_state={})
+    def test_lista_todos_servicos(self):
+        result = call_tool(listar_servicos)
+        assert 'Clínica Sorriso' in result
+        assert 'Limpeza e Profilaxia' in result
+        assert 'Clareamento Dental' in result
+        assert 'Tratamento de Canal' in result
+        assert 'Implante Dentário' in result
+        assert 'Avaliação e Diagnóstico' in result
 
-        result = call_tool(check_threshold, context, 50)
-        assert 'within the acceptable threshold' in result
-        assert '50' in result
+    def test_mostra_precos(self):
+        result = call_tool(listar_servicos)
+        assert 'R$ 150.00' in result  # limpeza
+        assert 'Gratuito' in result  # avaliação
 
-    def test_check_threshold_at_limit(self):
-        """Test value at threshold is allowed."""
-        context = create_run_context(session_state={})
-
-        result = call_tool(check_threshold, context, 100)
-        assert 'within the acceptable threshold' in result
-
-    def test_check_threshold_exceeds_limit(self):
-        """Test value exceeding threshold raises StopAgentRun."""
-        context = create_run_context(session_state={})
-
-        with pytest.raises(StopAgentRun) as exc_info:
-            call_tool(check_threshold, context, 101)
-
-        error_msg = str(exc_info.value)
-        assert '101' in error_msg
-        assert 'exceeds threshold' in error_msg
-        assert 'Stopping execution' in error_msg
-
-    def test_check_threshold_custom_threshold(self):
-        """Test check_threshold with custom threshold."""
-        context = create_run_context(session_state={})
-
-        # Value under custom threshold
-        result = call_tool(check_threshold, context, 50, threshold=50)
-        assert 'threshold of 50' in result
-
-        # Value over custom threshold
-        with pytest.raises(StopAgentRun):
-            call_tool(check_threshold, context, 51, threshold=50)
-
-    def test_check_threshold_negative_values(self):
-        """Test check_threshold with negative values."""
-        context = create_run_context(session_state={})
-
-        # Negative values are always within positive threshold
-        result = call_tool(check_threshold, context, -100)
-        assert 'within the acceptable threshold' in result
-
-    def test_check_threshold_zero(self):
-        """Test check_threshold with zero value."""
-        context = create_run_context(session_state={})
-
-        result = call_tool(check_threshold, context, 0)
-        assert 'within the acceptable threshold' in result
+    def test_mostra_duracao(self):
+        result = call_tool(listar_servicos)
+        assert '30 min' in result
+        assert '90 min' in result  # canal
 
 
-class TestRunContextIntegration:
-    """Integration tests demonstrating RunContext behavior patterns."""
+# =============================================================================
+# Verificar Disponibilidade
+# =============================================================================
 
-    def test_session_state_persistence_across_calls(self):
-        """Test that session state persists across multiple tool calls."""
-        context = create_run_context(session_state={})
 
-        # Add items across multiple calls
-        for i in range(3):
-            try:
-                call_tool(add_to_list, context, f'item{i}')
-            except RetryAgentRun:
-                pass  # Expected for first two items
+class TestVerificarDisponibilidade:
+    """Testes para verificar_disponibilidade."""
 
-        # State should accumulate
-        assert len(context.session_state['items']) == 3
+    def test_data_invalida_raises_retry(self):
+        with pytest.raises(RetryAgentRun) as exc:
+            call_tool(verificar_disponibilidade, '15/02/2025')
+        assert 'formato inválido' in str(exc.value)
 
-    def test_multiple_tools_share_context(self):
-        """Test that multiple tools can share the same context."""
-        context = create_run_context(session_state={'counter': 0})
+    def test_data_passada_raises_retry(self):
+        with pytest.raises(RetryAgentRun) as exc:
+            call_tool(verificar_disponibilidade, '2020-01-01')
+        assert 'datas passadas' in str(exc.value)
 
-        # Use check_threshold - it doesn't modify state but shares context
-        call_tool(check_threshold, context, 50)
+    def test_domingo_raises_retry(self):
+        # Encontrar um domingo futuro
+        from datetime import datetime, timedelta
+        hoje = datetime.now()
+        dias_ate_domingo = (6 - hoje.weekday()) % 7
+        if dias_ate_domingo == 0:
+            dias_ate_domingo = 7
+        domingo = (hoje + timedelta(days=dias_ate_domingo)).strftime('%Y-%m-%d')
 
-        # Original state should be preserved
-        assert context.session_state['counter'] == 0
+        with pytest.raises(RetryAgentRun) as exc:
+            call_tool(verificar_disponibilidade, domingo)
+        assert 'domingos' in str(exc.value)
 
-        # Add items
-        with pytest.raises(RetryAgentRun):
-            call_tool(add_to_list, context, 'test')
+    def test_dentista_inexistente_raises_retry(self):
+        from datetime import datetime, timedelta
+        data_futura = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+        # Pular se for domingo
+        d = datetime.strptime(data_futura, '%Y-%m-%d')
+        if d.weekday() == 6:
+            data_futura = (d + timedelta(days=1)).strftime('%Y-%m-%d')
 
-        # Both states coexist
-        assert 'counter' in context.session_state
-        assert 'items' in context.session_state
+        with pytest.raises(RetryAgentRun) as exc:
+            call_tool(verificar_disponibilidade, data_futura, 'Dr. Inexistente')
+        assert 'não encontrado' in str(exc.value)
+
+    def test_retorna_horarios_validos(self):
+        from datetime import datetime, timedelta
+        # Encontrar um dia útil futuro (segunda a sexta)
+        hoje = datetime.now()
+        for i in range(1, 8):
+            data = hoje + timedelta(days=i)
+            if data.weekday() < 5:  # seg-sex
+                data_str = data.strftime('%Y-%m-%d')
+                break
+
+        result = call_tool(verificar_disponibilidade, data_str, 'Maria')
+        assert 'Dra. Maria Silva' in result
+        assert ':' in result  # Contém horários no formato HH:MM
+
+    def test_mostra_todos_dentistas_sem_filtro(self):
+        from datetime import datetime, timedelta
+        hoje = datetime.now()
+        for i in range(1, 8):
+            data = hoje + timedelta(days=i)
+            if data.weekday() < 5:
+                data_str = data.strftime('%Y-%m-%d')
+                break
+
+        result = call_tool(verificar_disponibilidade, data_str)
+        assert 'Dra. Maria Silva' in result
+        assert 'Dr. Carlos Mendes' in result
+        assert 'Dra. Juliana Costa' in result
+
+
+# =============================================================================
+# Agendar Consulta
+# =============================================================================
+
+
+class TestAgendarConsulta:
+    """Testes para agendar_consulta."""
+
+    def test_servico_invalido_raises_retry(self):
+        ctx = create_run_context({})
+        with pytest.raises(RetryAgentRun) as exc:
+            call_tool(agendar_consulta, ctx, 'João', '2025-06-10', '09:00', 'raio_x', 'DRA001')
+        assert 'não encontrado' in str(exc.value)
+
+    def test_dentista_invalido_raises_retry(self):
+        ctx = create_run_context({})
+        with pytest.raises(RetryAgentRun) as exc:
+            call_tool(agendar_consulta, ctx, 'João', '2025-06-10', '09:00', 'limpeza', 'DR999')
+        assert 'não encontrado' in str(exc.value)
+
+    def test_data_invalida_raises_retry(self):
+        ctx = create_run_context({})
+        with pytest.raises(RetryAgentRun) as exc:
+            call_tool(agendar_consulta, ctx, 'João', 'invalido', '09:00', 'limpeza', 'DRA001')
+        assert 'formato inválido' in str(exc.value)
+
+    def test_horario_invalido_raises_retry(self):
+        ctx = create_run_context({})
+        with pytest.raises(RetryAgentRun) as exc:
+            call_tool(agendar_consulta, ctx, 'João', '2025-06-10', '09:15', 'limpeza', 'DRA001')
+        assert 'inválido' in str(exc.value)
+
+    def test_agendamento_salva_no_session_state(self):
+        ctx = create_run_context({})
+        # Encontrar um horário disponível
+        from app.tools._helpers import gerar_agenda_mock as _gerar_agenda_mock
+        data = '2025-06-10'
+        disponiveis = _gerar_agenda_mock(data, 'DRA001')
+        horario = disponiveis[0]
+
+        result = call_tool(agendar_consulta, ctx, 'João Silva', data, horario, 'limpeza', 'DRA001')
+        assert 'agendada com sucesso' in result
+        assert 'João Silva' in result
+        assert 'Limpeza e Profilaxia' in result
+        assert 'Dra. Maria Silva' in result
+
+        # Verifica session state
+        assert 'agendamentos' in ctx.session_state
+        assert len(ctx.session_state['agendamentos']) == 1
+        assert ctx.session_state['agendamentos'][0]['status'] == 'confirmado'
+        assert ctx.session_state['ultimo_agendamento'] is not None
+
+
+# =============================================================================
+# Cancelar Consulta
+# =============================================================================
+
+
+class TestCancelarConsulta:
+    """Testes para cancelar_consulta."""
+
+    def test_sem_agendamentos_raises_retry(self):
+        ctx = create_run_context({})
+        with pytest.raises(RetryAgentRun) as exc:
+            call_tool(cancelar_consulta, ctx, 'CON-ABC123')
+        assert 'Nenhuma consulta' in str(exc.value)
+
+    def test_consulta_inexistente_raises_retry(self):
+        ctx = create_run_context({
+            'agendamentos': [
+                {'id': 'CON-AAA111', 'status': 'confirmado', 'paciente': 'João',
+                 'data': '2025-06-10', 'horario': '09:00', 'servico_nome': 'Limpeza'},
+            ]
+        })
+        with pytest.raises(RetryAgentRun) as exc:
+            call_tool(cancelar_consulta, ctx, 'CON-ZZZ999')
+        assert 'não encontrada' in str(exc.value)
+
+    def test_cancelamento_com_sucesso(self):
+        ctx = create_run_context({
+            'agendamentos': [
+                {'id': 'CON-AAA111', 'status': 'confirmado', 'paciente': 'João',
+                 'data': '2025-06-10', 'horario': '09:00', 'servico_nome': 'Limpeza'},
+            ]
+        })
+        result = call_tool(cancelar_consulta, ctx, 'CON-AAA111')
+        assert 'cancelada com sucesso' in result
+        assert ctx.session_state['agendamentos'][0]['status'] == 'cancelado'
+
+    def test_cancelar_ja_cancelada_raises_retry(self):
+        ctx = create_run_context({
+            'agendamentos': [
+                {'id': 'CON-AAA111', 'status': 'cancelado', 'paciente': 'João',
+                 'data': '2025-06-10', 'horario': '09:00', 'servico_nome': 'Limpeza'},
+            ]
+        })
+        with pytest.raises(RetryAgentRun) as exc:
+            call_tool(cancelar_consulta, ctx, 'CON-AAA111')
+        assert 'já foi cancelada' in str(exc.value)
+
+
+# =============================================================================
+# Buscar Paciente
+# =============================================================================
+
+
+class TestBuscarPaciente:
+    """Testes para buscar_paciente."""
+
+    def test_busca_por_nome_completo(self):
+        result = call_tool(buscar_paciente, 'João Pereira')
+        assert 'João Pereira' in result
+        assert 'PAC001' in result
+
+    def test_busca_por_nome_parcial(self):
+        result = call_tool(buscar_paciente, 'Ana')
+        assert 'Ana Santos' in result
+        assert 'PAC002' in result
+
+    def test_busca_case_insensitive(self):
+        result = call_tool(buscar_paciente, 'carlos')
+        assert 'Carlos Oliveira' in result
+
+    def test_paciente_nao_encontrado_raises_retry(self):
+        with pytest.raises(RetryAgentRun) as exc:
+            call_tool(buscar_paciente, 'Paciente Inexistente')
+        assert 'Nenhum paciente' in str(exc.value)
+
+    def test_mostra_convenio(self):
+        result = call_tool(buscar_paciente, 'João')
+        assert 'OdontoPrev' in result
+
+    def test_mostra_particular_sem_convenio(self):
+        result = call_tool(buscar_paciente, 'Ana Santos')
+        assert 'Particular' in result
+
+
+# =============================================================================
+# Consultar Histórico
+# =============================================================================
+
+
+class TestConsultarHistorico:
+    """Testes para consultar_historico_paciente."""
+
+    def test_historico_existente(self):
+        result = call_tool(consultar_historico_paciente, 'PAC001')
+        assert 'João Pereira' in result
+        assert 'Limpeza e Profilaxia' in result
+        assert 'Restauração em Resina' in result
+        assert 'Dra. Maria Silva' in result
+
+    def test_paciente_inexistente_raises_retry(self):
+        with pytest.raises(RetryAgentRun) as exc:
+            call_tool(consultar_historico_paciente, 'PAC999')
+        assert 'não encontrado' in str(exc.value)
+
+    def test_mostra_proxima_revisao(self):
+        result = call_tool(consultar_historico_paciente, 'PAC001')
+        assert 'Próxima revisão' in result
+
+
+# =============================================================================
+# Consultar Convênios
+# =============================================================================
+
+
+class TestConsultarConvenios:
+    """Testes para consultar_convenios."""
+
+    def test_lista_todos_convenios(self):
+        result = call_tool(consultar_convenios)
+        assert 'OdontoPrev' in result
+        assert 'Amil Dental' in result
+        assert 'SulAmérica Odonto' in result
+        assert 'Bradesco Dental' in result
+
+    def test_mostra_cobertura(self):
+        result = call_tool(consultar_convenios)
+        assert '100%' in result  # limpeza é sempre 100%
+        assert 'Carência' in result
+
+    def test_mostra_desconto_particular(self):
+        result = call_tool(consultar_convenios)
+        assert '10% de desconto' in result
+
+
+# =============================================================================
+# Calcular Orçamento
+# =============================================================================
+
+
+class TestCalcularOrcamento:
+    """Testes para calcular_orcamento."""
+
+    def test_servico_unico_particular(self):
+        result = call_tool(calcular_orcamento, 'limpeza')
+        assert 'R$ 150.00' in result
+        assert 'Particular' in result
+
+    def test_multiplos_servicos(self):
+        result = call_tool(calcular_orcamento, 'limpeza,restauracao')
+        assert 'Limpeza e Profilaxia' in result
+        assert 'Restauração em Resina' in result
+        assert 'R$ 400.00' in result  # 150 + 250
+
+    def test_com_convenio(self):
+        result = call_tool(calcular_orcamento, 'limpeza,restauracao', 'OdontoPrev')
+        assert 'OdontoPrev' in result
+        assert '100%' in result  # limpeza
+        assert '80%' in result  # restauracao
+
+    def test_servico_invalido_raises_retry(self):
+        with pytest.raises(RetryAgentRun) as exc:
+            call_tool(calcular_orcamento, 'servico_falso')
+        assert 'não encontrados' in str(exc.value)
+
+    def test_convenio_invalido_raises_retry(self):
+        with pytest.raises(RetryAgentRun) as exc:
+            call_tool(calcular_orcamento, 'limpeza', 'ConvenioFalso')
+        assert 'não encontrado' in str(exc.value)
+
+    def test_mostra_parcelamento_particular(self):
+        result = call_tool(calcular_orcamento, 'canal')
+        assert 'Parcelado 3x' in result
+        assert 'vista' in result
+
+    def test_mostra_tempo_estimado(self):
+        result = call_tool(calcular_orcamento, 'limpeza,canal')
+        assert 'Tempo total estimado' in result
+        assert '120 minutos' in result  # 30 + 90
+
+    def test_servico_gratuito(self):
+        result = call_tool(calcular_orcamento, 'avaliacao')
+        assert 'Gratuito' in result
+
+
+# =============================================================================
+# Integration Tests
+# =============================================================================
+
+
+class TestFluxoCompleto:
+    """Testes de integração para fluxos completos de atendimento."""
+
+    def test_fluxo_buscar_e_consultar_historico(self):
+        """Buscar paciente e consultar histórico."""
+        result_busca = call_tool(buscar_paciente, 'Roberto')
+        assert 'PAC005' in result_busca
+
+        result_hist = call_tool(consultar_historico_paciente, 'PAC005')
+        assert 'Implante Dentário' in result_hist
+        assert 'Dr. Carlos Mendes' in result_hist
+
+    def test_fluxo_agendar_e_cancelar(self):
+        """Agendar e depois cancelar uma consulta."""
+        ctx = create_run_context({})
+
+        from app.tools._helpers import gerar_agenda_mock as _gerar_agenda_mock
+        data = '2025-06-10'
+        disponiveis = _gerar_agenda_mock(data, 'DRA001')
+        horario = disponiveis[0]
+
+        # Agendar
+        result = call_tool(agendar_consulta, ctx, 'Maria Teste', data, horario, 'limpeza', 'DRA001')
+        assert 'agendada com sucesso' in result
+
+        # Pegar ID da consulta
+        consulta_id = ctx.session_state['agendamentos'][0]['id']
+
+        # Cancelar
+        result = call_tool(cancelar_consulta, ctx, consulta_id)
+        assert 'cancelada com sucesso' in result
+        assert ctx.session_state['agendamentos'][0]['status'] == 'cancelado'
+
+    def test_fluxo_orcamento_com_convenio(self):
+        """Calcular orçamento usando convênio do paciente."""
+        result_busca = call_tool(buscar_paciente, 'João')
+        assert 'OdontoPrev' in result_busca
+
+        result_orc = call_tool(calcular_orcamento, 'limpeza,restauracao', 'OdontoPrev')
+        assert 'OdontoPrev' in result_orc
+        assert 'Cobertura do convênio' in result_orc
