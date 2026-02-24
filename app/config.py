@@ -160,7 +160,7 @@ class Settings(BaseSettings):
     # ==========================================================================
     LANGFUSE_PUBLIC_KEY: str = ''
     LANGFUSE_SECRET_KEY: str = ''
-    LANGFUSE_BASE_URL: str = 'https://cloud.langfuse.com'
+    LANGFUSE_BASE_URL: str = 'https://us.cloud.langfuse.com'
     LANGFUSE_ENABLED: bool = True
     LANGFUSE_SIGNATURE_SECRET: str = ''
 

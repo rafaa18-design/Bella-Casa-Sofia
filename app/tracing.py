@@ -1,17 +1,19 @@
 """OpenTelemetry tracing configuration.
 
-Provides distributed tracing with OpenTelemetry, exporting traces
-to configured OTLP endpoint (e.g., Jaeger, Tempo, etc.).
+Provides distributed tracing with OpenTelemetry, exporting traces to:
+- Generic OTLP endpoint (e.g., Jaeger, Tempo) when OTEL_ENABLED=true
+- Langfuse OTEL endpoint when LANGFUSE_ENABLED=true (for LLM cost/token tracking)
+
+When Langfuse OTEL is enabled, Agno agent LLM calls are automatically
+instrumented via OpenInference AgnoInstrumentor.
 """
 
+import base64
 import logging
 from contextlib import contextmanager
 from typing import Any
 
 from opentelemetry import trace
-from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import \
-    OTLPSpanExporter
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import (BatchSpanProcessor,
@@ -29,13 +31,24 @@ _tracer: trace.Tracer | None = None
 def setup_tracing(app=None):
     """Configure OpenTelemetry tracing.
 
+    Sets up TracerProvider with exporters based on configuration:
+    - OTEL_ENABLED: Adds gRPC OTLP exporter for generic tracing backends
+    - LANGFUSE_ENABLED: Adds HTTP OTLP exporter for Langfuse + instruments Agno
+
     Args:
-        app: Optional FastAPI app to instrument.
+        app: Optional FastAPI app to instrument with OTEL.
     """
     global _tracer
 
-    if not settings.OTEL_ENABLED:
-        logger.info('OpenTelemetry tracing disabled')
+    has_otel = settings.OTEL_ENABLED and settings.OTEL_EXPORTER_OTLP_ENDPOINT
+    has_langfuse = (
+        settings.LANGFUSE_ENABLED
+        and settings.LANGFUSE_PUBLIC_KEY
+        and settings.LANGFUSE_SECRET_KEY
+    )
+
+    if not has_otel and not has_langfuse:
+        logger.info('OpenTelemetry tracing disabled (no exporters configured)')
         return
 
     try:
@@ -51,19 +64,49 @@ def setup_tracing(app=None):
         # Create tracer provider
         provider = TracerProvider(resource=resource)
 
-        # Configure exporter
-        if settings.OTEL_EXPORTER_OTLP_ENDPOINT:
-            exporter = OTLPSpanExporter(
+        # Generic OTLP gRPC exporter (Jaeger, Tempo, etc.)
+        if has_otel:
+            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+                OTLPSpanExporter as GrpcSpanExporter,
+            )
+
+            grpc_exporter = GrpcSpanExporter(
                 endpoint=settings.OTEL_EXPORTER_OTLP_ENDPOINT,
                 insecure=settings.OTEL_EXPORTER_OTLP_INSECURE,
             )
-            # Use batch processor for production
-            processor = BatchSpanProcessor(exporter)
-            provider.add_span_processor(processor)
+            provider.add_span_processor(BatchSpanProcessor(grpc_exporter))
             logger.info(
-                f'OpenTelemetry configured with OTLP endpoint: '
-                f'{settings.OTEL_EXPORTER_OTLP_ENDPOINT}'
+                'OTEL gRPC exporter configured: %s',
+                settings.OTEL_EXPORTER_OTLP_ENDPOINT,
             )
+
+        # Langfuse OTEL HTTP exporter + Agno instrumentation
+        if has_langfuse:
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+                OTLPSpanExporter as HttpSpanExporter,
+            )
+
+            langfuse_auth = base64.b64encode(
+                f'{settings.LANGFUSE_PUBLIC_KEY}:{settings.LANGFUSE_SECRET_KEY}'.encode()
+            ).decode()
+
+            langfuse_exporter = HttpSpanExporter(
+                endpoint=f'{settings.LANGFUSE_BASE_URL}/api/public/otel/v1/traces',
+                headers={'Authorization': f'Basic {langfuse_auth}'},
+            )
+            provider.add_span_processor(
+                SimpleSpanProcessor(langfuse_exporter)
+            )
+            logger.info(
+                'Langfuse OTEL exporter configured: %s',
+                settings.LANGFUSE_BASE_URL,
+            )
+
+            # Instrument Agno with OpenInference
+            from openinference.instrumentation.agno import AgnoInstrumentor
+
+            AgnoInstrumentor().instrument(tracer_provider=provider)
+            logger.info('Agno instrumented with OpenInference → Langfuse')
 
         # Set global tracer provider
         trace.set_tracer_provider(provider)
@@ -74,8 +117,11 @@ def setup_tracing(app=None):
             settings.MODULE_VERSION,
         )
 
-        # Instrument FastAPI if app provided
-        if app is not None:
+        # Instrument FastAPI if app provided and generic OTEL enabled
+        if app is not None and has_otel:
+            from opentelemetry.instrumentation.fastapi import \
+                FastAPIInstrumentor
+
             FastAPIInstrumentor.instrument_app(
                 app,
                 excluded_urls='/health,/metrics',
@@ -83,7 +129,7 @@ def setup_tracing(app=None):
             logger.info('FastAPI instrumented with OpenTelemetry')
 
     except Exception as e:
-        logger.error(f'Failed to configure OpenTelemetry: {e}')
+        logger.error('Failed to configure OpenTelemetry: %s', e)
 
 
 def get_tracer() -> trace.Tracer:
