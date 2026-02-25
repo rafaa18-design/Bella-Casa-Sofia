@@ -70,11 +70,12 @@ def setup_tracing(app=None):
             provider.add_span_processor(SimpleSpanProcessor(langfuse_exporter))
             logger.info('Langfuse OTEL exporter configured: %s', settings.LANGFUSE_BASE_URL)
 
+        trace.set_tracer_provider(provider)
+
+        if has_langfuse:
             from openinference.instrumentation.agno import AgnoInstrumentor
             AgnoInstrumentor().instrument(tracer_provider=provider)
             logger.info('Agno instrumented with OpenInference → Langfuse')
-
-        trace.set_tracer_provider(provider)
 
         if app is not None and has_otel:
             from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
