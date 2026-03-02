@@ -1,356 +1,146 @@
 # State Management (Gerenciamento de Estado)
 
-O Agno fornece um sistema robusto de gerenciamento de estado para manter dados entre execuções do agente.
+O sistema de gerenciamento de estado utiliza Redis para persistir dados da sessao e historico de mensagens, com fallback em memoria para quando o Redis estiver indisponivel. O estado e acessado e modificado pelas tools do agente via `RunContext`, e injetado no system prompt para garantir que o agente nunca esqueca dados importantes.
+
+Implementacao: `app/storage.py` (persistencia), `app/runtime.py` (RunContext), `app/tools/formatar_contexto.py` (injecao no prompt)
 
 ---
 
 ## Conceitos
 
-| Conceito | Descrição |
+| Conceito | Descricao |
 |----------|-----------|
-| **session_state** | Estado mutável por sessão, acessível via `run_context.session_state` |
-| **session_id** | Identificador único da sessão/conversa |
-| **user_id** | Identificador do usuário (permite múltiplos usuários) |
-| **db** | Backend de persistência (PostgreSQL, SQLite) |
+| **RunContext** | Dataclass de `app/runtime.py` com `session_state`, `session_id`, `user_id` — passado para tools |
+| **session_state** | Dicionario mutavel armazenado no Redis, acessivel via `run_context.session_state` |
+| **Historico de mensagens** | Lista de mensagens (role + content) armazenada no Redis por conversa |
+| **Injecao de contexto** | `formatar_contexto_completo()` gera texto com dados da sessao para o system prompt |
+| **Redis** | Backend principal de persistencia, com fallback in-memory |
 
 ---
 
-## Session State Básico
+## Arquitetura
 
-```python
-from agno.agent import Agent
-from agno.db.sqlite import SqliteDb
-from agno.models.openai import OpenAIChat
-from agno.run import RunContext
-
-
-def add_item(run_context: RunContext, item: str) -> str:
-    """Add an item to the shopping list."""
-    run_context.session_state["shopping_list"].append(item)
-    return f"Added {item}. List: {run_context.session_state['shopping_list']}"
-
-
-agent = Agent(
-    model=OpenAIChat(id="gpt-4o-mini"),
-    db=SqliteDb(db_file="tmp/state.db"),
-    # Estado inicial padrão para todas as sessões
-    session_state={"shopping_list": []},
-    tools=[add_item],
-    # Usar state nas instruções
-    instructions="Shopping list: {shopping_list}",
-    markdown=True,
-)
-
-# Executa e modifica o estado
-agent.print_response("Add milk and eggs", stream=True)
-
-# Verificar estado final
-print(f"Final state: {agent.get_session_state()}")
-# Output: {'shopping_list': ['milk', 'eggs']}
+```
+┌─────────────────────────────────────────────────────────┐
+│                   SYSTEM PROMPT                          │
+│  instructions + memoria de longo prazo + contexto sessao │
+├─────────────────────────────────────────────────────────┤
+│             HISTORICO (ultimas N mensagens)               │
+│             (Redis: session:{cid}:history)                │
+├─────────────────────────────────────────────────────────┤
+│              SESSION STATE (Redis: session:{cid}:state)  │
+│  • cliente: {nome, convenio, telefone, cpf, email, ...}  │
+│  • preferencias: {horario_preferido, dentista, ...}      │
+│  • agendamentos: [...]                                   │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## State com PostgreSQL
+## RunContext (`app/runtime.py`)
+
+O `RunContext` e um dataclass criado a cada execucao do agente e passado automaticamente para as tools que o solicitam:
 
 ```python
-from agno.agent import Agent
-from agno.db.postgres import PostgresDb
-from agno.models.openai import OpenAIChat
+from dataclasses import dataclass, field
+from typing import Any
 
-db_url = "postgresql+psycopg://ai:ai@localhost:5532/ai"
-db = PostgresDb(db_url=db_url, session_table="sessions")
+@dataclass
+class RunContext:
+    """Contexto passado para tools durante a execucao do agente."""
+    session_state: dict[str, Any] = field(default_factory=dict)
+    session_id: str | None = None
+    user_id: str | None = None
+```
 
-agent = Agent(
-    model=OpenAIChat(id="gpt-4o-mini"),
-    instructions="User name is {user_name} and age is {age}",
-    db=db,
-)
+O `RunContext` e criado em `execute_agent()` no `main.py`:
 
-# Criar sessão com estado inicial
-agent.print_response(
-    "What is my name?",
-    session_id="user_1_session_1",
-    user_id="user_1",
-    session_state={"user_name": "John", "age": 30},
-)
-
-# Carregar estado existente automaticamente
-agent.print_response(
-    "How old am I?",
-    session_id="user_1_session_1",
-    user_id="user_1",
+```python
+run_context = RunContext(
+    session_state=session_state,     # carregado do Redis
+    session_id=conversation_id,
+    user_id=conversation_id,
 )
 ```
+
+As tools acessam e modificam `run_context.session_state` diretamente. Apos a execucao do agente, o state atualizado e salvo de volta no Redis.
 
 ---
 
-## Múltiplos Usuários e Sessões
+## Persistencia no Redis (`app/storage.py`)
+
+### Chaves Redis
+
+| Chave | Tipo | Descricao |
+|-------|------|-----------|
+| `session:{cid}:state` | String (JSON) | Estado da sessao (dicionario serializado) |
+| `session:{cid}:history` | List (JSON) | Historico de mensagens da conversa |
+
+### Funcoes de Session State
 
 ```python
-from agno.agent import Agent
-from agno.db.postgres import PostgresDb
-from agno.models.openai import OpenAIChat
+from app.storage import get_session_state, set_session_state, update_session_state, delete_session_state
 
-db = PostgresDb(db_url="postgresql+psycopg://...")
+# Carregar estado da sessao
+state = await get_session_state(conversation_id)
+# Retorna {} se nao existir
 
-agent = Agent(
-    model=OpenAIChat(id="gpt-4o-mini"),
-    db=db,
-)
+# Salvar estado completo
+await set_session_state(conversation_id, {"cliente": {"nome": "Joao"}})
 
-# Usuário 1, Sessão 1
-agent.print_response(
-    "Hello!",
-    session_id="session_456",
-    user_id="alice@example.com",
-)
+# Atualizar parcialmente (merge com existente)
+await update_session_state(conversation_id, {"preferencias": {"horario": "manha"}})
 
-# Usuário 1, Sessão 2 (nova conversa)
-agent.print_response(
-    "Hi there!",
-    session_id="session_789",
-    user_id="alice@example.com",
-)
-
-# Usuário 2, Sessão diferente
-agent.print_response(
-    "Hello!",
-    session_id="session_101",
-    user_id="bob@example.com",
-)
+# Deletar estado
+await delete_session_state(conversation_id)
 ```
+
+### Funcoes de Historico de Mensagens
+
+```python
+from app.storage import add_message_to_history, get_message_history, clear_message_history
+
+# Adicionar mensagem ao historico
+await add_message_to_history(conversation_id, role="user", content="Ola!")
+await add_message_to_history(conversation_id, role="assistant", content="Ola! Como posso ajudar?")
+
+# Obter historico (limitado automaticamente)
+history = await get_message_history(conversation_id, limit=40)
+# Retorna: [{"role": "user", "content": "...", "metadata": {}}, ...]
+
+# Limpar historico
+await clear_message_history(conversation_id)
+```
+
+O tamanho maximo do historico e controlado automaticamente:
+- Com consolidacao habilitada: `MEMORY_WINDOW * 2` mensagens
+- Sem consolidacao: `NUM_HISTORY_RUNS * 2` mensagens
+
+### Fallback In-Memory
+
+Se o Redis estiver indisponivel, todas as operacoes usam dicionarios em memoria como fallback:
+
+```python
+# Fallbacks internos (automaticos, transparentes)
+_memory_store: dict[str, Any] = {}        # session state
+_history_store: dict[str, list] = {}       # historico
+_cache_store: dict[str, Any] = {}          # cache geral
+```
+
+Isso garante que a aplicacao continue funcionando em modo degradado, porem sem persistencia entre reinicializacoes.
 
 ---
 
-## Acessando State em Tools
+## Tools de Gerenciamento de Estado
+
+O agente modifica o session state atraves de tools dedicadas. Cada tool recebe `run_context: RunContext` como primeiro parametro.
+
+### `salvar_dados_cliente` (`app/tools/salvar_dados_cliente.py`)
+
+Persiste dados cadastrais do paciente na sessao. Campos vazios nao sobrescrevem dados existentes.
 
 ```python
-from agno.run import RunContext
-from agno.tools import tool
-
-
-@tool
-def add_to_cart(run_context: RunContext, item: str, quantity: int = 1) -> str:
-    """Add item to shopping cart."""
-    cart = run_context.session_state.get("cart", [])
-    cart.append({"item": item, "quantity": quantity})
-    run_context.session_state["cart"] = cart
-    return f"Added {quantity}x {item} to cart"
-
-
-@tool
-def get_cart_total(run_context: RunContext) -> str:
-    """Get cart items count."""
-    cart = run_context.session_state.get("cart", [])
-    total = sum(item["quantity"] for item in cart)
-    return f"Cart has {total} items"
-
-
-@tool
-def clear_cart(run_context: RunContext) -> str:
-    """Clear the shopping cart."""
-    run_context.session_state["cart"] = []
-    return "Cart cleared"
-
-
-agent = Agent(
-    model=OpenAIChat(id="gpt-4o-mini"),
-    db=SqliteDb(db_file="tmp/shop.db"),
-    session_state={"cart": []},
-    tools=[add_to_cart, get_cart_total, clear_cart],
-    instructions="Current cart: {cart}",
-)
-```
-
----
-
-## State em Instruções
-
-O Agno substitui variáveis do state nas instruções automaticamente:
-
-```python
-agent = Agent(
-    model=OpenAIChat(id="gpt-4o-mini"),
-    db=db,
-    session_state={
-        "user_name": "Guest",
-        "preferences": {"language": "pt-BR"},
-        "cart": [],
-    },
-    instructions="""
-    User: {user_name}
-    Language preference: {preferences[language]}
-    Cart items: {cart}
-
-    Always greet the user by name.
-    Respond in their preferred language.
-    """,
-)
-```
-
----
-
-## State Passado no Runtime
-
-```python
-# Passar state na execução (sobrescreve o default)
-agent.print_response(
-    "What's in my session?",
-    session_state={"shopping_list": ["Potatoes"]},
-    stream=True,
-)
-
-# State é persistido e pode ser recuperado
-print(f"Stored state: {agent.get_session_state()}")
-
-# Próxima chamada com novo state sobrescreve
-agent.print_response(
-    "Check my state",
-    session_state={"secret_number": 42},
-    stream=True,
-)
-```
-
----
-
-## Compartilhando State Entre Agentes
-
-```python
-from uuid import uuid4
-from agno.agent import Agent
-from agno.db.sqlite import SqliteDb
-from agno.models.openai import OpenAIChat
-
-db = SqliteDb(db_file="tmp/shared.db")
-session_id = str(uuid4())
-user_id = "john_doe@example.com"
-
-# Agente 1 - Amigável
-agent_1 = Agent(
-    model=OpenAIChat(id="gpt-4o-mini"),
-    instructions="You are really friendly and helpful.",
-    db=db,
-    add_history_to_context=True,
-    enable_user_memories=True,
-)
-
-# Agente 2 - Técnico
-agent_2 = Agent(
-    model=OpenAIChat(id="gpt-4o-mini"),
-    instructions="You are technical and precise.",
-    db=db,
-    add_history_to_context=True,
-    enable_user_memories=True,
-)
-
-# Ambos compartilham a mesma sessão
-agent_1.print_response(
-    "Hi! My name is John.",
-    session_id=session_id,
-    user_id=user_id,
-)
-
-# Agent 2 tem acesso ao histórico e memórias
-agent_2.print_response(
-    "What is my name?",
-    session_id=session_id,
-    user_id=user_id,
-)
-```
-
----
-
-## State em Teams
-
-```python
-from agno.team import Team
-from agno.db.postgres import PostgresDb
-from agno.models.openai import OpenAIChat
-
-db = PostgresDb(db_url="postgresql+psycopg://...")
-
-team = Team(
-    db=db,
-    model=OpenAIChat(id="gpt-4o-mini"),
-    members=[researcher, writer],
-    instructions="User name is {user_name} and preferences: {preferences}",
-)
-
-# Criar sessão com state
-team.print_response(
-    "What is my name?",
-    session_id="team_session_1",
-    user_id="user_1",
-    session_state={"user_name": "John", "preferences": {"style": "casual"}},
-)
-
-# Carregar state existente
-team.print_response(
-    "Remember my preferences?",
-    session_id="team_session_1",
-    user_id="user_1",
-)
-```
-
----
-
-## Session IDs Automáticos
-
-```python
-# Se não fornecer session_id, o Agno gera um UUID automaticamente
-agent = Agent(
-    model=OpenAIChat(id="gpt-4o-mini"),
-    db=db,
-)
-
-# Primeira execução - cria nova sessão
-response = agent.run("Hello!")
-print(f"Session ID: {response.session_id}")  # UUID gerado
-
-# Para continuar a mesma sessão, use o mesmo session_id
-agent.run("Continue our chat", session_id=response.session_id)
-```
-
----
-
-## Memória Persistente com Contexto Pequeno
-
-### O Problema
-
-Quando `NUM_HISTORY_RUNS` é baixo (ex: 3), o agente "esquece" informações das primeiras mensagens da conversa. Dados como nome do paciente, convênio e preferências se perdem após 3 turnos.
-
-### A Solução: State + Injeção de Contexto
-
-O template resolve isso com uma arquitetura de 3 camadas:
-
-```
-┌─────────────────────────────────────────────┐
-│                INSTRUCTIONS                 │
-│  (prompt base + contexto da sessão injetado)│
-├─────────────────────────────────────────────┤
-│             HISTORY (últimos N runs)        │
-├─────────────────────────────────────────────┤
-│              SESSION STATE (Redis)          │
-│  • cliente: {nome, convenio, telefone, ...} │
-│  • preferencias: {horario, dentista, ...}   │
-│  • agendamentos: [...]                      │
-└─────────────────────────────────────────────┘
-```
-
-**Como funciona:**
-
-1. **Tools de estado** (`salvar_dados_cliente`, `salvar_preferencias`) gravam no `session_state`
-2. O `session_state` é persistido no Redis entre runs
-3. A cada novo run, `formatar_contexto_state()` gera um resumo textual do state
-4. Esse resumo é **injetado nas instructions** do agente antes de criar a instância
-5. O agente sempre "vê" os dados, mesmo que o histórico de mensagens já tenha rolado
-
-### Tools de Memória
-
-```python
-from agno.tools import tool
-from agno.run import RunContext
+from app.runtime import RunContext, tool
 
 @tool
 def salvar_dados_cliente(
@@ -362,120 +152,282 @@ def salvar_dados_cliente(
     convenio: str = "",
     cpf: str = "",
 ) -> str:
-    """Salva dados cadastrais do cliente. Campos vazios não sobrescrevem."""
-    state = run_context.session_state or {}
+    """Salva ou atualiza os dados cadastrais do cliente da sessao atual."""
+    state = run_context.session_state
     if "cliente" not in state:
         state["cliente"] = {}
+
     if nome:
         state["cliente"]["nome"] = nome
     if convenio:
         state["cliente"]["convenio"] = convenio
-    # ... outros campos
-    run_context.session_state = state
-    return "Dados salvos."
+    # ... demais campos
 
+    return "Dados do cliente salvos: ..."
+```
+
+### `salvar_preferencias` (`app/tools/salvar_preferencias.py`)
+
+Salva preferencias ou anotacoes temporarias do paciente (horarios, dentista preferido, alergias, etc.).
+
+```python
 @tool
 def salvar_preferencias(
     run_context: RunContext,
     chave: str,
     valor: str,
 ) -> str:
-    """Salva preferência temporária (horário, dentista, alergias, etc.)."""
-    state = run_context.session_state or {}
+    """Salva uma preferencia ou anotacao temporaria do paciente."""
+    state = run_context.session_state
     if "preferencias" not in state:
         state["preferencias"] = {}
-    state["preferencias"][chave] = {"valor": valor}
-    run_context.session_state = state
-    return f"Preferência salva: {chave} = {valor}"
 
-@tool
-def ver_contexto_sessao(run_context: RunContext) -> str:
-    """Recupera todos os dados e preferências da sessão atual."""
-    # Retorna resumo formatado do state
-    ...
+    state["preferencias"][chave] = {
+        "valor": valor,
+        "salvo_em": datetime.now().isoformat(),
+    }
+    return f"Preferencia salva: {chave} = {valor}"
 ```
 
-### Injeção de Contexto em main.py
+### `ver_contexto_sessao` (`app/tools/ver_contexto_sessao.py`)
+
+Recupera todos os dados e preferencias salvos na sessao atual. Util para o agente relembrar informacoes coletadas anteriormente.
 
 ```python
-from app.tools import formatar_contexto_state
+@tool
+def ver_contexto_sessao(run_context: RunContext) -> str:
+    """Recupera todos os dados do cliente e preferencias salvos nesta sessao."""
+    state = run_context.session_state
+    # Formata cliente, preferencias e agendamentos
+    return resumo_formatado
+```
 
-async def execute_agent(request, debug=False):
-    instructions = await get_agent_instructions()
-    session_state = await get_session_state(conversation_id)
+---
 
-    # Injeta state nas instructions para o agente não esquecer
+## Injecao de Contexto no Prompt
+
+### O Problema
+
+Quando o historico de mensagens e limitado (ex: `NUM_HISTORY_RUNS=2`), o agente "esquece" dados informados nas primeiras mensagens. Nome do paciente, convenio e preferencias se perdem apos poucos turnos.
+
+### A Solucao: Session State + Injecao no System Prompt
+
+O `formatar_contexto_completo()` (em `app/tools/formatar_contexto.py`) combina a memoria de longo prazo e o session state em um bloco de texto que e injetado no system prompt:
+
+```python
+def formatar_contexto_completo(session_state: dict, memory_context: str = "") -> str:
+    """Combina memoria consolidada + estado da sessao para injecao no prompt."""
+    parts = []
+
+    if memory_context:
+        parts.append(
+            "\n\n--- MEMORIA DE LONGO PRAZO ---\n"
+            + memory_context
+            + "\n--- FIM DA MEMORIA ---"
+        )
+
     state_context = formatar_contexto_state(session_state)
     if state_context:
-        instructions = instructions + state_context
+        parts.append(state_context)
 
-    agent = create_agent(
-        instructions=instructions,
-        session_id=conversation_id,
-        ...
-    )
+    return "".join(parts)
 ```
 
-O `formatar_contexto_state()` gera algo como:
+O `formatar_contexto_state()` gera o bloco de sessao:
 
 ```
---- CONTEXTO DA SESSÃO (dados já coletados, NÃO pergunte novamente) ---
-DADOS DO CLIENTE ATUAL: nome: João Pereira | convenio: OdontoPrev | telefone: (11) 98765-4321
-PREFERÊNCIAS DO CLIENTE: horario_preferido: manhã | dentista_preferido: Dra. Maria
-AGENDAMENTOS ATIVOS: CON-ABC123 - Limpeza em 2025-02-10 às 09:00 com Dra. Maria Silva
+--- CONTEXTO DA SESSAO (dados ja coletados, NAO pergunte novamente) ---
+DADOS DO CLIENTE ATUAL: nome: Joao Pereira | convenio: OdontoPrev | telefone: (11) 98765-4321
+PREFERENCIAS DO CLIENTE: horario_preferido: manha | dentista_preferido: Dra. Maria
+AGENDAMENTOS ATIVOS: CON-ABC123 - Limpeza em 2025-02-10 as 09:00 com Dra. Maria Silva
 --- FIM DO CONTEXTO ---
 ```
 
-### Instruções para o LLM
+### Fluxo em `execute_agent()` (`app/main.py`)
 
-O prompt do agente DEVE incluir instruções de gestão de memória:
+```python
+async def execute_agent(request, debug=False):
+    # 1. Carregar session state do Redis
+    session_state = await get_session_state(conversation_id)
 
+    # 2. Obter memoria consolidada
+    memory_context = await get_memory_context(conversation_id)
+
+    # 3. Formatar contexto completo
+    full_context = formatar_contexto_completo(session_state, memory_context)
+
+    # 4. Compilar prompt com contexto injetado
+    instructions = compile_prompt(template, session_context=full_context)
+
+    # 5. Criar RunContext com state carregado
+    run_context = RunContext(
+        session_state=session_state,
+        session_id=conversation_id,
+        user_id=conversation_id,
+    )
+
+    # 6. Executar agent loop (tools podem modificar session_state)
+    response = await run_agent_loop(messages, tools, run_context, model)
+
+    # 7. Persistir state atualizado de volta no Redis
+    if response.session_state:
+        await update_session_state(conversation_id, response.session_state)
 ```
-GESTÃO DE MEMÓRIA (CRÍTICO):
-- SEMPRE use salvar_dados_cliente quando o paciente informar nome, telefone, e-mail, CPF ou convênio
-- SEMPRE use salvar_preferencias quando o paciente mencionar horários preferidos, dentista preferido,
-  alergias, medos ou qualquer observação relevante
-- Use ver_contexto_sessao se precisar relembrar dados já coletados
-- Se o CONTEXTO DA SESSÃO estiver presente nas instruções, use esses dados e NÃO pergunte novamente
-- Ao agendar, use os dados do cliente já salvos no contexto da sessão
+
+---
+
+## Estrutura do Session State
+
+O session state segue uma estrutura convencional:
+
+```python
+{
+    "cliente": {
+        "nome": "Joao Pereira",
+        "paciente_id": "PAC001",
+        "telefone": "(11) 98765-4321",
+        "email": "joao@email.com",
+        "convenio": "OdontoPrev",
+        "cpf": "123.456.789-00",
+        "atualizado_em": "2025-02-10T14:30:00"
+    },
+    "preferencias": {
+        "horario_preferido": {
+            "valor": "manha",
+            "salvo_em": "2025-02-10T14:31:00"
+        },
+        "dentista_preferido": {
+            "valor": "Dra. Maria Silva",
+            "salvo_em": "2025-02-10T14:32:00"
+        },
+        "alergias": {
+            "valor": "latex",
+            "salvo_em": "2025-02-10T14:33:00"
+        }
+    },
+    "agendamentos": [
+        {
+            "id": "CON-ABC123",
+            "servico_nome": "Limpeza",
+            "data": "2025-02-15",
+            "horario": "09:00",
+            "dentista_nome": "Dra. Maria Silva",
+            "status": "confirmado"
+        }
+    ]
+}
 ```
 
-### Quando Usar Cada Tipo
+---
 
-| Tipo | Onde Armazenar | Duração | Exemplo |
+## Decorator `@tool` e ToolRegistry (`app/runtime.py`)
+
+### `@tool`
+
+Converte uma funcao Python em um `ToolDefinition` compativel com a API de tool-calling do LiteLLM/OpenAI. O parametro `run_context` e filtrado do JSON Schema (injetado automaticamente pelo registry na execucao).
+
+```python
+from app.runtime import tool, RunContext
+
+@tool
+def minha_tool(run_context: RunContext, parametro: str) -> str:
+    """Descricao que o LLM vera."""
+    run_context.session_state["chave"] = parametro
+    return "Resultado"
+```
+
+### `ToolRegistry`
+
+Registra todas as tools e executa chamadas:
+
+```python
+registry = ToolRegistry()
+registry.register(salvar_dados_cliente)
+registry.register(salvar_preferencias)
+registry.register(ver_contexto_sessao)
+
+# Gera definicoes para litellm
+tool_definitions = registry.get_definitions()
+
+# Executa tool com injecao de RunContext
+result = await registry.execute("salvar_dados_cliente", args, run_context)
+```
+
+---
+
+## Quando Usar Cada Tipo de Dado
+
+| Tipo | Onde Armazenar | Duracao | Exemplo |
 |------|---------------|---------|---------|
-| **Dados permanentes** | `session_state["cliente"]` via `salvar_dados_cliente` | Toda a sessão | Nome, CPF, convênio, telefone |
-| **Preferências temporárias** | `session_state["preferencias"]` via `salvar_preferencias` | Toda a sessão | Horário preferido, dentista preferido, alergias |
-| **Dados de operação** | `session_state["agendamentos"]` via tool específica | Toda a sessão | Consultas agendadas/canceladas |
-| **Contexto conversacional** | History (automático) | Últimos N runs | O que foi dito recentemente |
+| **Dados cadastrais** | `session_state["cliente"]` via `salvar_dados_cliente` | Toda a sessao | Nome, CPF, convenio, telefone |
+| **Preferencias** | `session_state["preferencias"]` via `salvar_preferencias` | Toda a sessao | Horario preferido, dentista, alergias |
+| **Dados operacionais** | `session_state["agendamentos"]` via tool especifica | Toda a sessao | Consultas agendadas/canceladas |
+| **Fatos de longo prazo** | `memory:{cid}:facts` via consolidacao LLM | Entre sessoes (TTL) | Historico resumido, perfil do paciente |
+| **Contexto conversacional** | `session:{cid}:history` (automatico) | Ultimas N mensagens | O que foi dito recentemente |
 
-### Configuração Recomendada
+---
+
+## Instrucoes para o LLM
+
+O prompt do agente DEVE incluir instrucoes de gestao de memoria para que o LLM saiba quando usar as tools:
+
+```
+GESTAO DE MEMORIA (CRITICO):
+- SEMPRE use salvar_dados_cliente quando o paciente informar nome, telefone, e-mail, CPF ou convenio
+- SEMPRE use salvar_preferencias quando o paciente mencionar horarios preferidos, dentista preferido,
+  alergias, medos ou qualquer observacao relevante
+- Use ver_contexto_sessao se precisar relembrar dados ja coletados
+- Se o CONTEXTO DA SESSAO estiver presente nas instrucoes, use esses dados e NAO pergunte novamente
+- Ao agendar, use os dados do cliente ja salvos no contexto da sessao
+```
+
+Essas instrucoes ja estao no `AGENT_INSTRUCTIONS_FALLBACK` em `app/config.py`.
+
+---
+
+## Configuracao
 
 ```bash
-# Em .env
-NUM_HISTORY_RUNS=3           # Contexto conversacional curto (economia de tokens)
-ENABLE_USER_MEMORIES=true    # Agno salva memórias do usuário automaticamente
-ENABLE_SESSION_SUMMARIES=true # Agno resume sessões anteriores
+# Historico de mensagens (sem consolidacao)
+NUM_HISTORY_RUNS=2
+
+# Consolidacao de memoria (complementa o session state)
+MEMORY_CONSOLIDATION_ENABLED=true
+MEMORY_WINDOW=20
+
+# TTL do Redis (em segundos)
+REDIS_SESSION_TTL=86400
+
+# Redis connection pool
+REDIS_URL=redis://localhost:6379/0
+REDIS_POOL_MAX_SIZE=20
+REDIS_CONNECT_TIMEOUT=2.0
+REDIS_SOCKET_TIMEOUT=5.0
 ```
 
 ---
 
-## Boas Práticas
+## Resiliencia
 
-| Prática | Descrição |
-|---------|-----------|
-| **Inicialize defaults** | Sempre defina `session_state` com valores padrão |
-| **Use get()** | Acesse state com `.get()` para evitar KeyError |
-| **Valide tipos** | O state pode ser modificado por tools, valide antes de usar |
-| **Limpe dados sensíveis** | Não persista senhas ou tokens no state |
-| **Use IDs consistentes** | Mantenha padrão para session_id e user_id |
-| **Salve dados cedo** | Use `salvar_dados_cliente` assim que o paciente informar dados |
-| **Instrua o LLM** | O prompt DEVE dizer ao agente para usar as tools de memória |
-| **Injete contexto** | Use `formatar_contexto_state` para dados sobreviverem ao history rolloff |
+| Aspecto | Comportamento |
+|---------|---------------|
+| **Redis indisponivel** | Fallback automatico para armazenamento in-memory (dicionarios Python) |
+| **Fallback transparente** | `get_session_state()` tenta Redis, cai para `_memory_store` se falhar |
+| **Sem persistencia no fallback** | Dados in-memory sao perdidos se a aplicacao reiniciar |
+| **Connection pool** | Pool de conexoes configuravel (`REDIS_POOL_MAX_SIZE`) para desempenho |
+| **TTL automatico** | Chaves expiram apos `REDIS_SESSION_TTL` (padrao: 24h) |
+| **Estado degradado** | Endpoint `/health` reporta `degraded` quando Redis esta indisponivel |
 
 ---
 
-## Referências
+## Boas Praticas
 
-- [Agno State Management](https://docs.agno.com/basics/state/overview)
-- [Agno Sessions](https://docs.agno.com/basics/sessions/session-management)
+| Pratica | Descricao |
+|---------|-----------|
+| **Salve dados cedo** | Use `salvar_dados_cliente` assim que o paciente informar dados |
+| **Use `get()` seguro** | Acesse state com `.get("chave", {})` para evitar KeyError |
+| **Instrua o LLM** | O prompt DEVE dizer ao agente para usar as tools de memoria |
+| **Injete contexto** | `formatar_contexto_completo` garante que dados sobrevivam ao rolloff do historico |
+| **Combine com memoria** | Session state (imediato) + memoria consolidada (longo prazo) se complementam |
+| **Nao persista segredos** | Nao armazene senhas, tokens ou chaves de API no session state |
+| **Monitore Redis** | Use `/health` para verificar disponibilidade e `/profiling` para performance |

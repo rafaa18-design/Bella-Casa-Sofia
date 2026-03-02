@@ -1,364 +1,321 @@
-# Multimodal (Imagens, Áudio, Vídeo)
+# Multimodal (Imagens, Audio, Video)
 
-O Agno suporta entrada e saída multimodal para processamento de imagens, áudio e vídeo.
+O sistema suporta entrada multimodal via o modelo `InputItem` e a funcao `parse_multimodal_input()` em `app/main.py`. Imagens sao enviadas ao LLM no formato OpenAI Vision (via LiteLLM). Audio e transcrito para texto via API Whisper da OpenAI.
 
 ---
 
 ## Conceitos
 
-| Conceito | Descrição |
+| Conceito | Descricao |
 |----------|-----------|
-| **Image** | Imagens via URL, bytes ou filepath |
-| **Audio** | Áudio para transcrição ou análise |
-| **Video** | Vídeo para análise (Gemini) |
-| **modalities** | Configuração de output (text, audio) |
+| **InputItem** | Modelo Pydantic para cada item de entrada (texto, imagem, audio, documento, video) |
+| **parse_multimodal_input()** | Funcao que converte `list[InputItem]` em `(text, list[dict])` para o LiteLLM |
+| **transcribe_audio()** | Transcreve audio em texto usando a API OpenAI Whisper |
+| **Content Parts** | Formato OpenAI Vision usado pelo LiteLLM para imagens inline |
+
+---
+
+## Modelo InputItem
+
+Cada item de entrada segue o schema `InputItem` definido em `app/models.py`:
+
+```python
+from pydantic import BaseModel, Field
+from typing import Literal
+
+InputType = Literal['text', 'image', 'audio', 'document', 'video']
+
+class InputItem(BaseModel):
+    """Item de entrada multimodal."""
+    type: InputType = Field(..., description='Tipo do conteudo: text, image, audio, document, video')
+    content: str = Field(..., description='Texto puro ou conteudo codificado em base64')
+    filename: str | None = Field(None, description='Nome original do arquivo (para conteudo nao-texto)')
+    mime_type: str | None = Field(None, description='Tipo MIME (ex: image/png)')
+```
+
+Uma requisicao envia uma lista de `InputItem` (maximo 20):
+
+```python
+class RunRequest(BaseModel):
+    input: list[InputItem] = Field(..., min_length=1, max_length=20)
+    conversation_id: str = Field(..., min_length=1)
+    model: str | None = Field(None, description='Override opcional de modelo')
+```
+
+---
+
+## Fluxo de Processamento
+
+```
+Request.input (list[InputItem])
+    |
+    v
+parse_multimodal_input(items)
+    |
+    +-- type == 'text'   --> concatena em text_parts
+    +-- type == 'image'  --> decodifica base64, monta content part OpenAI Vision
+    +-- type == 'audio'  --> decodifica base64, transcribe_audio() --> texto
+    +-- type == 'video'  --> nota textual (nao suportado nativamente)
+    +-- type == 'document' --> nota textual com filename
+    |
+    v
+Retorna (text_message: str, images: list[dict])
+    |
+    v
+build_system_messages(instructions, text_message, images, history)
+    |
+    v
+litellm.acompletion(messages=...) via run_agent_loop()
+```
 
 ---
 
 ## Imagens
 
-### Via URL
+Imagens sao enviadas como base64 no campo `content` do `InputItem`. A funcao `parse_multimodal_input()` converte para o formato OpenAI Vision que o LiteLLM aceita.
 
-```python
-from agno.agent import Agent
-from agno.media import Image
-from agno.models.openai import OpenAIChat
-from agno.tools.duckduckgo import DuckDuckGoTools
+### Formato de Entrada (Request JSON)
 
-agent = Agent(
-    model=OpenAIChat(id="gpt-4o-mini"),
-    tools=[DuckDuckGoTools()],
-    markdown=True,
-)
-
-agent.print_response(
-    "Tell me about this image and give me the latest news about it.",
-    images=[
-        Image(url="https://upload.wikimedia.org/wikipedia/commons/0/0c/GoldenGateBridge-001.jpg")
-    ],
-    stream=True,
-)
+```json
+{
+  "input": [
+    {"type": "text", "content": "O que voce ve nesta imagem?"},
+    {
+      "type": "image",
+      "content": "iVBORw0KGgoAAAANSUhEUgAA...",
+      "filename": "foto.png",
+      "mime_type": "image/png"
+    }
+  ],
+  "conversation_id": "conv-123"
+}
 ```
 
-### Via Bytes
+### Conversao Interna (parse_multimodal_input)
 
 ```python
-from pathlib import Path
-from agno.agent import Agent
-from agno.media import Image
-from agno.models.openai import OpenAIChat
-
-agent = Agent(
-    model=OpenAIChat(id="gpt-4o-mini"),
-    markdown=True,
-)
-
-# Ler imagem como bytes
-image_path = Path("./sample.jpg")
-image_bytes = image_path.read_bytes()
-
-agent.print_response(
-    "What's in this image?",
-    images=[Image(content=image_bytes)],
-    stream=True,
-)
+# Trecho de app/main.py - parse_multimodal_input()
+elif item.type == 'image':
+    content_bytes = base64.b64decode(item.content)
+    b64_str = base64.b64encode(content_bytes).decode('utf-8')
+    mime = item.mime_type or 'image/jpeg'
+    images.append({
+        'type': 'image_url',
+        'image_url': {'url': f'data:{mime};base64,{b64_str}'},
+    })
 ```
 
-### Via URL como Bytes
+A imagem e montada como um content part no formato padrao:
 
 ```python
-import requests
-from agno.agent import Agent
-from agno.media import Image
-from agno.models.mistral import MistralChat
-
-agent = Agent(
-    model=MistralChat(id="pixtral-12b-2409"),
-    markdown=True,
-)
-
-image_url = "https://example.com/image.jpeg"
-
-def fetch_image_bytes(url: str) -> bytes:
-    headers = {"User-Agent": "Mozilla/5.0"}
-    response = requests.get(url, headers=headers)
-    response.raise_for_status()
-    return response.content
-
-image_bytes = fetch_image_bytes(image_url)
-
-agent.print_response(
-    "Describe this image.",
-    images=[Image(content=image_bytes)],
-)
+{
+    "type": "image_url",
+    "image_url": {"url": "data:image/png;base64,iVBORw0KGgo..."}
+}
 ```
 
-### Múltiplas Imagens
+### Montagem da Mensagem (build_system_messages)
+
+Quando ha imagens, a mensagem do usuario usa o formato multimodal do LiteLLM:
 
 ```python
-agent.print_response(
-    "Compare these two images.",
-    images=[
-        Image(url="https://example.com/image1.jpg"),
-        Image(url="https://example.com/image2.jpg"),
-    ],
-)
+# Trecho de app/agent.py - build_system_messages()
+if images:
+    content_parts = [{'type': 'text', 'text': text_message}]
+    content_parts.extend(images)
+    messages.append({'role': 'user', 'content': content_parts})
+else:
+    messages.append({'role': 'user', 'content': text_message})
 ```
 
-### Com Gemini
+### Multiplas Imagens
+
+Basta enviar multiplos `InputItem` com `type: "image"`. Todos serao adicionados como content parts na mesma mensagem:
+
+```json
+{
+  "input": [
+    {"type": "text", "content": "Compare estas duas imagens."},
+    {"type": "image", "content": "base64_imagem_1...", "mime_type": "image/jpeg"},
+    {"type": "image", "content": "base64_imagem_2...", "mime_type": "image/jpeg"}
+  ],
+  "conversation_id": "conv-456"
+}
+```
+
+---
+
+## Audio
+
+Audio nao e enviado nativamente ao LLM. Em vez disso, e transcrito para texto via API OpenAI Whisper e o resultado e concatenado ao texto do usuario.
+
+### Transcricao com Whisper (transcribe_audio)
 
 ```python
-from agno.agent import Agent
-from agno.media import Image
-from agno.models.google import Gemini
+# Trecho de app/main.py - transcribe_audio()
+def transcribe_audio(audio_bytes: bytes, mime_type: str | None = None) -> str:
+    """Transcreve audio em texto usando a API OpenAI Whisper."""
+    ext = '.mp3'
+    if mime_type:
+        ext_map = {'audio/ogg': '.ogg', 'audio/mpeg': '.mp3', 'audio/wav': '.wav'}
+        ext = ext_map.get(mime_type, '.mp3')
 
-agent = Agent(
-    model=Gemini(id="gemini-2.0-flash"),
-    markdown=True,
-)
+    with tempfile.NamedTemporaryFile(suffix=ext, delete=True) as f:
+        f.write(audio_bytes)
+        f.flush()
+        with open(f.name, 'rb') as audio_file:
+            resp = httpx.post(
+                'https://api.openai.com/v1/audio/transcriptions',
+                headers={'Authorization': f'Bearer {settings.OPENAI_API_KEY}'},
+                files={'file': (f'audio{ext}', audio_file)},
+                data={'model': 'gpt-4o-mini-transcribe', 'language': 'pt'},
+                timeout=30.0,
+            )
+            if resp.status_code == 200:
+                return resp.json().get('text', '')
+            return '[audio nao transcrito]'
+```
 
-agent.print_response(
-    "Tell me about this image.",
-    images=[Image(url="https://upload.wikimedia.org/...")],
+### Fluxo no parse_multimodal_input
+
+```python
+elif item.type == 'audio':
+    content_bytes = base64.b64decode(item.content)
+    transcription = transcribe_audio(content_bytes, item.mime_type)
+    if transcription:
+        text_parts.append(f'[Audio do usuario]: {transcription}')
+```
+
+O texto transcrito e injetado na mensagem do usuario com o prefixo `[Audio do usuario]:`, permitindo que o LLM entenda que aquele conteudo veio de uma entrada de voz.
+
+### Exemplo de Request com Audio
+
+```json
+{
+  "input": [
+    {
+      "type": "audio",
+      "content": "UklGRiQAAABXQVZFZm10IBAAAA...",
+      "filename": "mensagem.ogg",
+      "mime_type": "audio/ogg"
+    }
+  ],
+  "conversation_id": "conv-789"
+}
+```
+
+### Formatos Suportados
+
+| Formato | MIME Type | Extensao |
+|---------|-----------|----------|
+| MP3 | audio/mpeg | .mp3 |
+| WAV | audio/wav | .wav |
+| OGG | audio/ogg | .ogg |
+
+---
+
+## Video
+
+Video nao e suportado nativamente para analise direta. Quando um `InputItem` com `type: "video"` e recebido, uma nota textual e adicionada ao contexto:
+
+```python
+elif item.type == 'video':
+    text_parts.append('[Video enviado pelo usuario - nao suportado para analise direta]')
+```
+
+---
+
+## Documentos
+
+Documentos tambem nao sao processados diretamente. Uma nota com o nome do arquivo e adicionada:
+
+```python
+elif item.type == 'document':
+    text_parts.append(f'[Documento enviado: {item.filename or "documento"}]')
+```
+
+---
+
+## Suporte por Tipo de Entrada
+
+| Tipo | Processamento | Enviado ao LLM |
+|------|--------------|----------------|
+| **text** | Direto | Sim, como texto |
+| **image** | Base64 para content part | Sim, formato OpenAI Vision |
+| **audio** | Whisper API para texto | Sim, como texto transcrito |
+| **video** | Nota textual | Apenas nota informativa |
+| **document** | Nota textual | Apenas nota informativa |
+
+---
+
+## Formatos de Imagem Aceitos
+
+Declarados no endpoint `/metadata`:
+
+```python
+input_types=InputTypes(
+    supported_types=['text', 'image', 'audio'],
+    allowed_formats={
+        'image': ['jpeg', 'jpg', 'png', 'webp'],
+        'audio': ['mp3', 'wav', 'ogg'],
+    },
 )
 ```
 
 ---
 
-## Áudio
+## Exemplo Completo: Request Multimodal
 
-### Transcrição com Whisper
-
-```python
-from pathlib import Path
-from agno.agent import Agent
-from agno.tools.openai import OpenAITools
-from agno.utils.media import download_file
-
-# Download do áudio
-url = "https://agno-public.s3.amazonaws.com/demo_data/sample_conversation.wav"
-local_path = Path("tmp/sample.wav")
-download_file(url, local_path)
-
-# Agente de transcrição
-agent = Agent(
-    tools=[OpenAITools(transcription_model="gpt-4o-transcribe")],
-    markdown=True,
-)
-
-agent.print_response(f"Transcribe the audio file: {local_path}")
+```json
+{
+  "input": [
+    {"type": "text", "content": "Analise esta imagem e me diga o que voce ve."},
+    {
+      "type": "image",
+      "content": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+      "mime_type": "image/png",
+      "filename": "captura.png"
+    }
+  ],
+  "conversation_id": "sessao-001",
+  "model": "claude-sonnet-4-20250514"
+}
 ```
 
-### Transcrição com Groq
+Resultado interno apos `parse_multimodal_input()`:
 
 ```python
-from agno.agent import Agent
-from agno.models.openai import OpenAIChat
-from agno.tools.models.groq import GroqTools
-
-url = "https://agno-public.s3.amazonaws.com/demo_data/sample_conversation.wav"
-
-agent = Agent(
-    name="Transcription Agent",
-    model=OpenAIChat(id="gpt-4o-mini"),
-    tools=[GroqTools(exclude_tools=["generate_speech"])],
-)
-
-agent.print_response(f"Transcribe the audio file at '{url}' to English")
+text_message = "Analise esta imagem e me diga o que voce ve."
+images = [
+    {
+        "type": "image_url",
+        "image_url": {
+            "url": "data:image/png;base64,iVBORw0KGgoAAAANSUh..."
+        }
+    }
+]
 ```
 
-### Análise de Áudio com Gemini
+Mensagem final enviada ao LiteLLM:
 
 ```python
-import requests
-from agno.agent import Agent
-from agno.media import Audio
-from agno.models.google import Gemini
-
-agent = Agent(
-    model=Gemini(id="gemini-2.0-flash-exp"),
-    markdown=True,
-)
-
-url = "https://agno-public.s3.amazonaws.com/demo_data/QA-01.mp3"
-response = requests.get(url)
-audio_content = response.content
-
-agent.print_response(
-    "Give a transcript of this audio. Use Speaker A, Speaker B to identify speakers.",
-    audio=[Audio(content=audio_content)],
-    stream=True,
-)
-```
-
-### Áudio como Input e Output (OpenAI)
-
-```python
-from textwrap import dedent
-import requests
-from agno.agent import Agent
-from agno.media import Audio
-from agno.models.openai import OpenAIChat
-from agno.utils.audio import write_audio_to_file
-
-# Agente com output de áudio
-agent = Agent(
-    model=OpenAIChat(
-        id="gpt-4o-mini-audio-preview",
-        modalities=["text", "audio"],  # Output em texto e áudio
-        audio={"voice": "sage", "format": "wav"},
-    ),
-    description="You are an audio processing expert.",
-    instructions=dedent("""
-        Listen to audio input carefully.
-        Provide clear, concise responses.
-        Maintain a natural, conversational tone.
-    """),
-)
-
-# Buscar áudio de exemplo
-url = "https://openaiassets.blob.core.windows.net/$web/API/docs/audio/alloy.wav"
-response = requests.get(url)
-
-# Processar e obter resposta
-run_response = agent.run(
-    "What's in this recording? Analyze the content and tone.",
-    audio=[Audio(content=response.content, format="wav")],
-)
-
-# Salvar resposta de áudio
-if run_response.response_audio is not None:
-    write_audio_to_file(
-        audio=run_response.response_audio.content,
-        filename="tmp/response.wav",
-    )
+[
+    {"role": "system", "content": "...instrucoes do agente..."},
+    # ...historico de conversas anteriores...
+    {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "Analise esta imagem e me diga o que voce ve."},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+        ]
+    }
+]
 ```
 
 ---
 
-## Vídeo
+## Referencias
 
-O suporte a vídeo está disponível principalmente com modelos Gemini.
-
-### Via Filepath
-
-```python
-from pathlib import Path
-from agno.agent import Agent
-from agno.media import Video
-from agno.models.google import Gemini
-
-agent = Agent(
-    model=Gemini(id="gemini-2.0-flash-001"),
-    markdown=True,
-)
-
-# Download: wget https://storage.googleapis.com/generativeai-downloads/images/GreatRedSpot.mp4
-video_path = Path("./GreatRedSpot.mp4")
-
-agent.print_response(
-    "Tell me about this video",
-    videos=[Video(filepath=video_path)],
-)
-```
-
-### Via URL (Bytes)
-
-```python
-import requests
-from agno.agent import Agent
-from agno.media import Video
-from agno.models.google import Gemini
-
-agent = Agent(
-    model=Gemini(id="gemini-2.0-flash-exp"),
-    markdown=True,
-)
-
-url = "https://videos.pexels.com/video-files/5752729/5752729-uhd_2560_1440_30fps.mp4"
-
-# Download do vídeo
-response = requests.get(url)
-video_content = response.content
-
-agent.print_response(
-    "Tell me about this video",
-    videos=[Video(content=video_content)],
-)
-```
-
----
-
-## Multimodal em Teams
-
-```python
-from agno.agent import Agent
-from agno.team import Team
-
-team = Team(
-    members=[
-        Agent(
-            name="Visual Analyst",
-            role="Analyze visual content",
-            instructions="Focus on visual details",
-        ),
-        Agent(
-            name="Content Writer",
-            role="Create descriptions",
-            instructions="Write clear summaries",
-        ),
-    ],
-)
-
-team.print_response(
-    [
-        {"type": "text", "text": "What's in this image?"},
-        {
-            "type": "image_url",
-            "image_url": {
-                "url": "https://example.com/image.jpg",
-            },
-        },
-    ],
-    stream=True,
-    markdown=True,
-)
-```
-
----
-
-## Configurações de Media
-
-```python
-from agno.agent import Agent
-from agno.models.openai import OpenAIChat
-
-agent = Agent(
-    model=OpenAIChat(id="gpt-4o-mini"),
-    # Enviar media para o modelo (default: True)
-    send_media_to_model=True,
-    # Armazenar media no banco (default: True)
-    store_media=True,
-)
-```
-
----
-
-## Suporte por Modelo
-
-| Modelo | Imagem | Áudio | Vídeo |
-|--------|--------|-------|-------|
-| GPT-4o/4o-mini | ✅ | ✅ | ❌ |
-| GPT-4o-audio-preview | ✅ | ✅ (I/O) | ❌ |
-| Claude 3.5 | ✅ | ❌ | ❌ |
-| Gemini 2.0 | ✅ | ✅ | ✅ |
-| Pixtral | ✅ | ❌ | ❌ |
-| Llama Vision | ✅ | ❌ | ❌ |
-
----
-
-## Referências
-
-- [Agno Images](https://docs.agno.com/basics/multimodal/images/image-input)
-- [Agno Audio](https://docs.agno.com/basics/multimodal/audio/speech-to-text)
-- [Agno Video](https://docs.agno.com/basics/multimodal/video/video_input)
+- [LiteLLM Vision/Image Support](https://docs.litellm.ai/docs/completion/vision)
+- [OpenAI Vision API](https://platform.openai.com/docs/guides/vision)
+- [OpenAI Whisper API](https://platform.openai.com/docs/guides/speech-to-text)

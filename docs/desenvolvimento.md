@@ -1,6 +1,6 @@
 # Desenvolvimento e Testes
 
-Este documento cobre testes, debugging, troubleshooting e boas práticas de desenvolvimento.
+Este documento cobre a estrutura de testes, debugging, troubleshooting, profiling e padroes de desenvolvimento do template.
 
 ---
 
@@ -17,7 +17,7 @@ tests/
 
 ---
 
-## Fixtures Úteis
+## Fixtures Uteis
 
 ```python
 # tests/conftest.py
@@ -28,20 +28,20 @@ from app.main import app
 
 @pytest.fixture
 def client():
-    """Cliente de teste sem autenticação."""
+    """Cliente de teste sem autenticacao."""
     return TestClient(app)
 
 
 @pytest.fixture
 def auth_client(client):
-    """Cliente de teste com JWT válido."""
+    """Cliente de teste com JWT valido."""
     response = client.post(
-        '/auth/login',
-        params={'username': 'test', 'password': 'password'},
+        "/auth/login",
+        params={"username": "test", "password": "password"},
     )
     if response.status_code == 200:
-        token = response.json().get('access_token')
-        client.headers['Authorization'] = f'Bearer {token}'
+        token = response.json().get("access_token")
+        client.headers["Authorization"] = f"Bearer {token}"
     return client
 ```
 
@@ -49,40 +49,57 @@ def auth_client(client):
 
 ## Testando Tools
 
+As tools utilizam `RunContext`, `RetryAgentRun` e `StopAgentRun` do modulo `app.runtime` (runtime proprio do projeto, sem dependencia de frameworks externos):
+
 ```python
 # tests/test_tools.py
 import pytest
-from agno.exceptions import RetryAgentRun, StopAgentRun
+from app.runtime import RunContext, RetryAgentRun, StopAgentRun
 from app.tools import calculate, format_date
-
-
-def call_tool(tool_func, *args, **kwargs):
-    """Helper para chamar tools do Agno."""
-    if hasattr(tool_func, 'func'):
-        return tool_func.func(*args, **kwargs)
-    elif hasattr(tool_func, 'entrypoint'):
-        return tool_func.entrypoint(*args, **kwargs)
-    return tool_func(*args, **kwargs)
 
 
 class TestCalculateTool:
     def test_simple_addition(self):
-        assert call_tool(calculate, '2 + 2') == '4'
+        """Testa chamada direta da funcao da tool."""
+        result = calculate.func("2 + 2")
+        assert result == "4"
 
     def test_division_by_zero_raises_retry(self):
+        """RetryAgentRun envia feedback ao LLM para corrigir."""
         with pytest.raises(RetryAgentRun) as exc:
-            call_tool(calculate, '10 / 0')
-        assert 'Division by zero' in str(exc.value)
+            calculate.func("10 / 0")
+        assert "Division by zero" in str(exc.value)
 
 
 class TestFormatDateTool:
     def test_iso_format(self):
-        result = call_tool(format_date, '2024-01-15')
-        assert result == '2024-01-15'
+        result = format_date.func("2024-01-15")
+        assert result == "2024-01-15"
 
     def test_invalid_date_raises_retry(self):
         with pytest.raises(RetryAgentRun):
-            call_tool(format_date, 'invalid')
+            format_date.func("invalid")
+```
+
+### Testando Tools que Usam RunContext
+
+```python
+from app.runtime import RunContext
+
+class TestToolComContexto:
+    def test_salvar_dados(self):
+        """Tools que recebem run_context precisam de um RunContext."""
+        ctx = RunContext(
+            session_state={},
+            session_id="test-session",
+            user_id="test-user",
+        )
+        result = salvar_dados_cliente.func(
+            run_context=ctx,
+            nome="Joao",
+            convenio="OdontoPrev",
+        )
+        assert "Joao" in ctx.session_state.get("cliente_nome", "")
 ```
 
 ---
@@ -93,25 +110,35 @@ class TestFormatDateTool:
 # tests/test_api.py
 class TestAgentBenchEndpoints:
     def test_metadata(self, auth_client):
-        response = auth_client.get('/metadata')
+        response = auth_client.get("/metadata")
         assert response.status_code == 200
         data = response.json()
-        assert 'module_id' in data
-        assert 'capabilities' in data
+        assert "module_id" in data
+        assert "capabilities" in data
 
     def test_run_validation(self, auth_client):
-        response = auth_client.post('/run', json={})
+        response = auth_client.post("/run", json={})
         assert response.status_code == 422
 
     def test_run_with_valid_input(self, auth_client):
-        response = auth_client.post('/run', json={
-            'input': [{'type': 'text', 'content': 'Olá'}],
-            'conversation_id': 'test_001',
+        response = auth_client.post("/run", json={
+            "input": [{"type": "text", "content": "Ola"}],
+            "conversation_id": "test_001",
         })
         assert response.status_code == 200
         data = response.json()
-        assert 'final_output' in data
-        assert 'metrics' in data
+        assert "final_output" in data
+        assert "metrics" in data
+
+    def test_run_debug_returns_trajectory(self, auth_client):
+        """O endpoint /run_debug retorna a trajetoria completa."""
+        response = auth_client.post("/run_debug", json={
+            "input": [{"type": "text", "content": "Ola"}],
+            "conversation_id": "test_debug_001",
+        })
+        assert response.status_code == 200
+        data = response.json()
+        assert "trajectory" in data
 ```
 
 ---
@@ -120,16 +147,31 @@ class TestAgentBenchEndpoints:
 
 ```bash
 # Todos os testes
-make test
+uv run pytest
 
 # Com coverage
 uv run pytest --cov=app --cov-report=html
 
-# Testes específicos
+# Testes especificos
 uv run pytest tests/test_tools.py -v
 
 # Testes com keyword
 uv run pytest -k "calculate" -v
+
+# Ou via Make
+make test
+```
+
+---
+
+## Servidor de Desenvolvimento
+
+```bash
+# Iniciar servidor com hot-reload
+uv run uvicorn app.main:app --reload
+
+# Ou via Make
+make dev
 ```
 
 ---
@@ -138,21 +180,26 @@ uv run pytest -k "calculate" -v
 
 ### Problemas Comuns
 
-| Problema | Causa | Solução |
+| Problema | Causa | Solucao |
 |----------|-------|---------|
-| API Key não encontrada | pydantic-settings não exporta | Passar `api_key=` explicitamente |
-| 401 em endpoints | JWT incorreto | Verificar `excluded_route_paths` |
-| Tool não chamada | Docstring inadequada | Melhorar descrição |
-| Memória não persiste | DB não configurado | Adicionar `db=` ao agente |
-| Rate limit | Muitas requisições | Habilitar `exponential_backoff=True` |
-| Histórico não funciona | session_id não definido | Passar `session_id=` |
-| Tool retorna erro | Exceção não tratada | Usar `RetryAgentRun` |
+| API Key nao encontrada | Variavel de ambiente ausente | Verificar `.env` e `app/config.py` |
+| 401 em endpoints | JWT incorreto ou expirado | Verificar `excluded_route_paths` em `app/auth.py` |
+| Tool nao chamada pelo LLM | Docstring inadequada | Melhorar descricao da tool |
+| Memoria nao persiste | Redis nao configurado | Configurar `REDIS_URL` |
+| Rate limit atingido | Muitas requisicoes | Ajustar `RATE_LIMIT_REQUESTS_PER_MINUTE` |
+| Historico nao funciona | `conversation_id` ausente | Passar `conversation_id` na requisicao |
+| Tool retorna erro | Excecao nao tratada | Usar `RetryAgentRun` para feedback ao LLM |
+| Circuit breaker aberto | Falhas consecutivas | Verificar logs e `circuit_breaker_state` no `/metrics` |
 
 ### Debug de Tools
 
 ```python
-from agno.utils.log import logger
+import logging
+from app.runtime import RunContext, RetryAgentRun, tool
 
+logger = logging.getLogger(__name__)
+
+@tool
 def minha_tool(run_context: RunContext, param: str) -> str:
     """Tool com logging para debug."""
     logger.info(f"Tool chamada com: {param}")
@@ -164,187 +211,122 @@ def minha_tool(run_context: RunContext, param: str) -> str:
         return resultado
     except Exception as e:
         logger.error(f"Erro na tool: {e}")
-        raise RetryAgentRun(f"Erro: {e}. Tente novamente.")
+        raise RetryAgentRun(f"Erro: {e}. Tente com outros parametros.")
 ```
 
-### Logs Úteis
+### Logs em Desenvolvimento
 
-```python
-# Habilitar logs detalhados
-import logging
-logging.basicConfig(level=logging.DEBUG)
-
-# Log específico do Agno
-logging.getLogger("agno").setLevel(logging.DEBUG)
-
-# Em desenvolvimento
-agent = Agent(
-    debug_mode=True,
-    show_tool_calls=True,
-)
+```bash
+# Variaveis de ambiente para logs detalhados
+LOG_LEVEL=DEBUG
+LOG_FORMAT=text
 ```
 
-### Verificando Configuração
+O formato `text` eh mais legivel para desenvolvimento:
+
+```
+2025-01-15 10:30:00 | DEBUG    | [abc12345] app.agent_loop | Starting agent loop
+2025-01-15 10:30:01 | INFO     | [abc12345] app.runtime | Tool "calculate" executed in 5ms
+```
+
+Para producao, use `LOG_FORMAT=json` para logs estruturados compativeis com ferramentas de agregacao (ELK, Loki, etc.).
+
+### Verificando Configuracao
 
 ```python
 from app.config import settings
 
 print(f"MODULE_ID: {settings.MODULE_ID}")
 print(f"AUTH_ENABLED: {settings.AUTH_ENABLED}")
-print(f"POSTGRES_URL: {'OK' if settings.POSTGRES_URL else 'Não configurado'}")
-print(f"ANTHROPIC_API_KEY: {'OK' if settings.ANTHROPIC_API_KEY else 'Não configurado'}")
+print(f"REDIS_URL: {'OK' if settings.REDIS_URL else 'Nao configurado'}")
+print(f"ANTHROPIC_API_KEY: {'OK' if settings.ANTHROPIC_API_KEY else 'Nao configurado'}")
+print(f"LANGFUSE_ENABLED: {settings.LANGFUSE_ENABLED}")
+print(f"METRICS_ENABLED: {settings.METRICS_ENABLED}")
 ```
 
-### Testando Conexão com Banco
+### Verificando Metricas
 
-```python
-from app.storage import get_postgres_db
+```bash
+# Acessar metricas Prometheus diretamente
+curl http://localhost:8000/metrics
 
-db = get_postgres_db()
-if db:
-    try:
-        db.create_tables()
-        print("Conexão OK")
-    except Exception as e:
-        print(f"Erro: {e}")
-else:
-    print("POSTGRES_URL não configurado")
+# Filtrar metricas do agente
+curl -s http://localhost:8000/metrics | grep agent_
 ```
 
 ---
 
-## Debugging e Observabilidade
+## Profiling
 
-### Debug Mode
+O modulo `app/profiling.py` permite identificar gargalos de performance em operacoes assincronas.
 
-```python
-from agno.agent import Agent
-
-# Habilitar debug detalhado
-agent = Agent(
-    debug_mode=True,       # Logs detalhados do agente
-    show_tool_calls=True,  # Mostra chamadas de tools
-)
-
-# Em times
-from agno.team import Team
-
-team = Team(
-    debug_mode=True,
-    show_members_responses=True,  # Mostra respostas de membros
-)
-```
-
-### Integração Langfuse
+### Decorator para Funcoes
 
 ```python
-# app/langfuse_client.py
-from langfuse import Langfuse
-from app.config import settings
+from app.profiling import profile_async_function
 
-langfuse = None
-if settings.LANGFUSE_ENABLED:
-    langfuse = Langfuse(
-        public_key=settings.LANGFUSE_PUBLIC_KEY,
-        secret_key=settings.LANGFUSE_SECRET_KEY,
-        host=settings.LANGFUSE_BASE_URL,
-    )
-
-
-def create_trace(name: str, session_id: str, user_id: str = None):
-    """Cria trace no Langfuse para observabilidade."""
-    if not langfuse:
-        return None
-
-    return langfuse.trace(
-        name=name,
-        session_id=session_id,
-        user_id=user_id,
-    )
-
-
-def log_tool_call(trace, tool_name: str, args: dict, result: str):
-    """Registra chamada de tool no trace."""
-    if trace:
-        span = trace.span(
-            name=f"tool:{tool_name}",
-            input=args,
-        )
-        span.end(output=result)
+@profile_async_function(log_slow_threshold_ms=500)
+async def buscar_historico(conversation_id: str):
+    """Emite warning se ultrapassar 500ms."""
+    return await redis.lrange(f"history:{conversation_id}", 0, -1)
 ```
 
-### Métricas e Logs Estruturados
+### Context Manager
 
 ```python
-import logging
-from agno.utils.log import logger
-import structlog
+from app.profiling import profile_async
 
-# Configurar logging básico
-logging.basicConfig(level=logging.INFO)
-
-# Log específico do Agno
-logging.getLogger("agno").setLevel(logging.DEBUG)
-
-# Logs estruturados com structlog
-structlog.configure(
-    processors=[
-        structlog.stdlib.filter_by_level,
-        structlog.stdlib.add_logger_name,
-        structlog.stdlib.add_log_level,
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.JSONRenderer()
-    ],
-    wrapper_class=structlog.stdlib.BoundLogger,
-    context_class=dict,
-    logger_factory=structlog.stdlib.LoggerFactory(),
-)
-
-log = structlog.get_logger()
-
-# Uso
-log.info(
-    "request_processed",
-    conversation_id=conversation_id,
-    latency_ms=latency_ms,
-    tokens_used=tokens_used,
-)
+async def processar_requisicao():
+    async with profile_async("llm_call", log_slow_threshold_ms=5000):
+        response = await litellm.acompletion(...)
 ```
+
+### Consultando Estatisticas
+
+```bash
+curl -H "Authorization: Bearer <token>" http://localhost:8000/profiling
+```
+
+Retorna estatisticas agregadas (count, mean, min, max, p50, p95, p99) para cada operacao rastreada.
 
 ---
 
-## Padrões de Arquitetura
+## Padroes de Arquitetura
 
-### Agente Singleton
+### Runtime Proprio (app/runtime.py)
+
+O projeto usa um runtime proprio em vez de um framework de agentes. Os componentes principais sao:
 
 ```python
-# app/agent.py
-from functools import lru_cache
-from agno.agent import Agent
-
-
-@lru_cache(maxsize=1)
-def get_base_agent() -> Agent:
-    """Retorna instância singleton do agente base."""
-    return Agent(
-        model=get_model(),
-        tools=get_tools(),
-        instructions=get_instructions(),
-    )
-
-
-def create_session_agent(session_id: str, user_id: str) -> Agent:
-    """Cria agente com contexto de sessão."""
-    base = get_base_agent()
-    return Agent(
-        model=base.model,
-        tools=base.tools,
-        instructions=base.instructions,
-        session_id=session_id,
-        user_id=user_id,
-        db=get_postgres_db(),
-    )
+from app.runtime import (
+    RunContext,        # Contexto passado para tools durante execucao
+    RetryAgentRun,     # Excecao: envia feedback ao LLM e continua o loop
+    StopAgentRun,      # Excecao: para o agent loop imediatamente
+    tool,              # Decorator para registrar tools
+    ToolRegistry,      # Registro e execucao de tools
+)
 ```
+
+### Criando uma Nova Tool
+
+Cada tool fica em seu proprio arquivo em `app/tools/`:
+
+```python
+# app/tools/minha_tool.py
+"""Tool: minha_tool -- Descricao breve."""
+from app.runtime import tool, RunContext, RetryAgentRun
+
+@tool
+def minha_tool(run_context: RunContext, parametro: str) -> str:
+    """Descricao que o LLM usa para decidir quando chamar esta tool."""
+    if not valido(parametro):
+        raise RetryAgentRun("Parametro invalido. Tente com outro valor.")
+
+    run_context.session_state["ultimo_resultado"] = resultado
+    return resultado
+```
+
+Registre em `app/tools/__init__.py` (re-export) e em `app/agent.py` dentro de `get_tools_registry()`.
 
 ### Factory Pattern para Tools
 
@@ -354,7 +336,7 @@ from typing import List, Callable
 
 
 def get_tools_for_role(role: str) -> List[Callable]:
-    """Retorna tools baseado no papel do usuário."""
+    """Retorna tools baseado no papel do usuario."""
     base_tools = [get_current_time, calculate]
 
     if role == "admin":
@@ -363,58 +345,27 @@ def get_tools_for_role(role: str) -> List[Callable]:
         return base_tools + [query_database, generate_report]
     else:
         return base_tools
-
-
-# Uso
-agent = Agent(
-    tools=get_tools_for_role(user_role),
-)
 ```
 
-### Dependency Injection Pattern
+### Dependency Injection via RunContext
 
 ```python
-# app/dependencies.py
-from agno.run import RunContext
+from app.runtime import RunContext, tool
 
 
-class DatabaseService:
-    def query(self, sql: str) -> list:
-        # Implementação
-        pass
-
-
-class CacheService:
-    def get(self, key: str) -> any:
-        pass
-
-    def set(self, key: str, value: any, ttl: int = 3600):
-        pass
-
-
-def create_agent_with_services() -> Agent:
-    return Agent(
-        tools=[query_data, cache_result],
-        dependencies={
-            "db": DatabaseService(),
-            "cache": CacheService(),
-        },
-    )
-
-
-# Na tool
+@tool
 def query_data(run_context: RunContext, query: str) -> str:
-    db = run_context.dependencies["db"]
-    cache = run_context.dependencies["cache"]
+    """Consulta dados usando servicos disponveis no contexto."""
+    # O session_state pode carregar dependencias configuradas no startup
+    cache = run_context.session_state.get("cache")
 
-    # Verifica cache
-    cached = cache.get(f"query:{query}")
+    cached = cache.get(f"query:{query}") if cache else None
     if cached:
         return cached
 
-    # Executa query
-    result = db.query(query)
-    cache.set(f"query:{query}", result)
+    result = executar_query(query)
+    if cache:
+        cache.set(f"query:{query}", result)
     return str(result)
 ```
 
@@ -424,23 +375,22 @@ def query_data(run_context: RunContext, query: str) -> str:
 
 ```bash
 # Desenvolvimento
-make install          # Instalar dependências de produção
+make install          # Instalar dependencias de producao
 make dev              # Iniciar servidor de desenvolvimento
 make test             # Rodar testes
-make lint             # Verificar código
-make format           # Formatar código
+make lint             # Verificar codigo
+make format           # Formatar codigo
 
 # Docker
 make docker-build     # Build da imagem
-make up               # Subir serviços
-make down             # Parar serviços
+make up               # Subir servicos
+make down             # Parar servicos
 make logs             # Ver logs
 
 # Migrations
 make migrate          # Rodar migrations Alembic
-make migrate-down     # Rollback última migration
+make migrate-down     # Rollback ultima migration
 make migrate-new      # Criar nova migration
-make agno-migrate     # Criar tabelas do Agno
 
 # Limpeza
 make clean            # Remover arquivos de cache
@@ -448,52 +398,48 @@ make clean            # Remover arquivos de cache
 
 ---
 
-## Checklists de Implementação
+## Checklists de Implementacao
 
-### Novo Módulo
+### Novo Modulo
 
-- [ ] Definir `MODULE_ID` único
-- [ ] Configurar variáveis de ambiente
-- [ ] Implementar ferramentas necessárias
-- [ ] Configurar instruções do agente
+- [ ] Definir `MODULE_ID` unico
+- [ ] Configurar variaveis de ambiente (`.env`)
+- [ ] Implementar ferramentas necessarias em `app/tools/`
+- [ ] Configurar instrucoes do agente em `app/agent.py`
 - [ ] Testar endpoints `/metadata`, `/run`, `/run_debug`
 - [ ] Documentar ferramentas em `/metadata`
-- [ ] Configurar Langfuse (opcional)
+- [ ] Configurar Langfuse para gestao de prompts (opcional)
+- [ ] Configurar OpenTelemetry para tracing (opcional)
 - [ ] Implementar testes automatizados
+- [ ] Verificar metricas em `/metrics`
 
 ### Nova Ferramenta
 
-- [ ] Criar função com docstring completa
-- [ ] Adicionar type hints em todos os parâmetros
-- [ ] Implementar tratamento de erros com `RetryAgentRun`/`StopAgentRun`
+- [ ] Criar arquivo `app/tools/minha_tool.py`
+- [ ] Usar decorator `@tool` de `app.runtime`
+- [ ] Adicionar docstring descritiva (o LLM usa para decidir quando chamar)
+- [ ] Adicionar type hints em todos os parametros
+- [ ] Implementar tratamento de erros com `RetryAgentRun` / `StopAgentRun`
 - [ ] Registrar em `app/tools/__init__.py`
-- [ ] Adicionar ao agente em `app/agent.py`
-- [ ] Escrever testes unitários
+- [ ] Adicionar ao registry em `app/agent.py` (`get_tools_registry()`)
+- [ ] Escrever testes unitarios em `tests/test_tools.py`
 - [ ] Atualizar `/metadata` tools_exposed
 
-### Knowledge Base
+### Memoria Consolidada
 
-- [ ] Escolher backend (PgVector, LanceDb)
-- [ ] Selecionar embedder apropriado
-- [ ] Definir tipo de busca (vector, hybrid, keyword)
-- [ ] Carregar documentos
-- [ ] Testar retrieval
-- [ ] Considerar reranking para maior precisão
-
-### Multi-Agent Team
-
-- [ ] Definir papéis claros para cada agente
-- [ ] Configurar modelo apropriado
-- [ ] Implementar instruções de coordenação
-- [ ] Testar delegação
-- [ ] Considerar histórico por membro
-- [ ] Adicionar retries e backoff
+- [ ] Configurar `REDIS_URL` para persistencia
+- [ ] Habilitar `MEMORY_CONSOLIDATION_ENABLED=true`
+- [ ] Definir `MEMORY_WINDOW` (numero de mensagens antes de consolidar)
+- [ ] Escolher modelo barato para consolidacao (`MEMORY_CONSOLIDATION_MODEL`)
+- [ ] Testar que fatos consolidados aparecem no system prompt
 
 ---
 
-## Referências
+## Referencias
 
 - [Pytest Documentation](https://docs.pytest.org)
 - [FastAPI Testing](https://fastapi.tiangolo.com/tutorial/testing/)
+- [LiteLLM Documentation](https://docs.litellm.ai/)
 - [Langfuse Documentation](https://langfuse.com/docs)
-- [Structlog Documentation](https://www.structlog.org/)
+- [Prometheus Client Python](https://github.com/prometheus/client_python)
+- [OpenTelemetry Python](https://opentelemetry.io/docs/languages/python/)

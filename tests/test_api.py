@@ -1,4 +1,4 @@
-"""Tests for the API endpoints (AgentBench + AgentOS)."""
+"""Tests for the API endpoints (AgentBench + System + Auth)."""
 
 
 from app.config import settings
@@ -24,7 +24,6 @@ class TestSystemEndpoints:
         assert 'name' in data
         assert 'version' in data
         assert 'agentbench' in data
-        assert 'agentos' in data
 
 
 class TestAgentBenchEndpoints:
@@ -99,24 +98,6 @@ class TestAgentBenchEndpoints:
         response = auth_client.post('/run_debug', json={})
         # Should return 422 for validation error, not 404 or 401
         assert response.status_code == 422
-
-
-class TestAgentOSEndpoints:
-    """Tests for AgentOS endpoints (require auth)."""
-
-    def test_config(self, auth_client):
-        """Test AgentOS config endpoint."""
-        response = auth_client.get('/config')
-        assert response.status_code == 200
-        data = response.json()
-        assert 'agents' in data
-
-    def test_agents_list(self, auth_client):
-        """Test agents list endpoint."""
-        response = auth_client.get('/agents')
-        assert response.status_code == 200
-        data = response.json()
-        assert isinstance(data, list)
 
 
 class TestAuthEndpoints:

@@ -1,58 +1,97 @@
-# Deploy e Produção
+# Deploy e Producao
 
-Este documento cobre deploy, configuração de ambiente e segurança.
+Este documento cobre deploy, configuracao de ambiente, seguranca e monitoramento para o template de agente com LiteLLM + FastAPI.
 
 ---
 
-## Variáveis de Ambiente
+## Arquitetura de Producao
 
-### Produção Mínima
+O agente roda como uma aplicacao **FastAPI pura**. As dependencias principais sao:
+
+- **LiteLLM** (`litellm>=1.55.0`): Abstrai chamadas a multiplos providers (Anthropic, OpenAI, Vertex AI)
+- **json-repair** (`json-repair>=0.30.0`): Reparo de JSON malformado em respostas do LLM
+- **Redis**: Session state, historico de mensagens, cache e memoria consolidada
+- **PostgreSQL**: Opcional (para dados de dominio; nao e usado pelo agent loop)
+
+---
+
+## Variaveis de Ambiente
+
+### Producao Minima
 
 ```bash
-# Identificação
+# Identificacao
 MODULE_ID=meu-agente
 MODULE_VERSION=1.0.0
 
-# LLM (pelo menos um)
+# LLM (pelo menos uma chave)
 ANTHROPIC_API_KEY=sk-ant-...
 # ou
 OPENAI_API_KEY=sk-...
 
-# Autenticação
+# Autenticacao
 AUTH_ENABLED=true
 JWT_SECRET=chave-secreta-longa-e-segura-minimo-32-chars
+AUTH_USERS='{"admin": "$2b$12$..."}'  # Hashes bcrypt
 
 # Storage
-POSTGRES_URL=postgresql+psycopg://user:pass@host:5432/db
+REDIS_URL=redis://redis:6379/0
 ```
 
 ### Opcional: Observabilidade
 
 ```bash
+# Langfuse
 LANGFUSE_PUBLIC_KEY=pk-lf-...
 LANGFUSE_SECRET_KEY=sk-lf-...
-LANGFUSE_BASE_URL=https://cloud.langfuse.com
+LANGFUSE_BASE_URL=https://us.cloud.langfuse.com
 LANGFUSE_ENABLED=true
+
+# Prometheus
+METRICS_ENABLED=true
+
+# OpenTelemetry
+OTEL_ENABLED=true
+OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
 ```
 
-### Todas as Variáveis
+### Todas as Variaveis
 
-| Variável | Descrição | Default |
-|----------|-----------|---------|
-| `MODULE_ID` | ID único do módulo | `asani-agent-template` |
-| `MODULE_VERSION` | Versão semântica | `1.0.0` |
-| `DEFAULT_MODEL` | Modelo padrão | `claude-sonnet-4-20250514` |
-| `AUTH_ENABLED` | Habilitar autenticação | `true` |
-| `JWT_SECRET` | Chave para tokens JWT | - |
-| `POSTGRES_URL` | URL do PostgreSQL | - |
-| `NUM_HISTORY_RUNS` | Mensagens no contexto | `10` |
-| `CACHE_SYSTEM_PROMPT` | Cache de prompt | `true` |
+| Variavel | Descricao | Padrao |
+|----------|-----------|--------|
+| `MODULE_ID` | ID unico do modulo | `clinica-odontologica` |
+| `MODULE_VERSION` | Versao semantica | `1.0.0` |
+| `DEFAULT_MODEL` | Modelo LiteLLM padrao | `gpt-5-mini` |
+| `MODEL_PROVIDER` | Provider (`anthropic`, `openai`, `vertexai`) | `anthropic` |
+| `AUTH_ENABLED` | Habilitar autenticacao JWT | `true` |
+| `JWT_SECRET` | Chave para tokens JWT | - (obrigatorio) |
+| `JWT_ALGORITHM` | Algoritmo JWT | `HS256` |
+| `JWT_EXPIRATION_HOURS` | Expiracao do token | `24` |
+| `AUTH_USERS` | Credenciais JSON (bcrypt) | - |
+| `REDIS_URL` | URL de conexao Redis | `redis://localhost:6379/0` |
+| `REDIS_SESSION_TTL` | TTL de sessao (segundos) | `86400` (24h) |
+| `REDIS_POOL_MAX_SIZE` | Conexoes maximas Redis | `20` |
+| `MEMORY_CONSOLIDATION_ENABLED` | Consolidacao de memoria LLM | `true` |
+| `MEMORY_WINDOW` | Mensagens antes de consolidar | `20` |
+| `MEMORY_CONSOLIDATION_MODEL` | Modelo para consolidacao | (usa `DEFAULT_MODEL`) |
+| `TOOL_OUTPUT_MAX_CHARS` | Limite de caracteres no output de tools | `500` |
+| `NUM_HISTORY_RUNS` | Historico (sem consolidacao) | `2` |
+| `MAX_TURNS` | Turnos maximos no agent loop | `10` |
+| `TOOL_CALL_LIMIT` | Chamadas de tool por turno | `5` |
+| `MAX_OUTPUT_TOKENS` | Tokens maximos na resposta | `2048` |
+| `CACHE_SYSTEM_PROMPT` | Cache de system prompt | `true` |
+| `LOG_LEVEL` | Nivel de log | `INFO` |
+| `LOG_FORMAT` | Formato de log (`json`/`text`) | `json` |
+| `CORS_ORIGINS` | Origens CORS permitidas | `["http://localhost:3000", ...]` |
+| `RATE_LIMIT_ENABLED` | Habilitar rate limiting | `true` |
+| `RATE_LIMIT_REQUESTS_PER_MINUTE` | Limite de requisicoes/minuto | `60` |
+| `SHUTDOWN_TIMEOUT` | Timeout de graceful shutdown (s) | `30` |
 
 ---
 
 ## Docker Compose
 
-### Produção
+### Producao
 
 ```yaml
 # docker-compose.prod.yml
@@ -68,11 +107,17 @@ services:
     environment:
       - MODULE_ID=${MODULE_ID}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - POSTGRES_URL=postgresql+psycopg://agent:${DB_PASSWORD}@postgres:5432/agentdb
+      - REDIS_URL=redis://redis:6379/0
       - AUTH_ENABLED=true
       - JWT_SECRET=${JWT_SECRET}
+      - AUTH_USERS=${AUTH_USERS}
+      - MEMORY_CONSOLIDATION_ENABLED=true
+      - MEMORY_WINDOW=20
+      - LANGFUSE_ENABLED=${LANGFUSE_ENABLED:-false}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
     depends_on:
-      postgres:
+      redis:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
@@ -81,22 +126,19 @@ services:
       timeout: 10s
       retries: 3
 
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: agent
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-      POSTGRES_DB: agentdb
+  redis:
+    image: redis:7-alpine
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - redis_data:/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U agent -d agentdb"]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
 volumes:
-  postgres_data:
+  redis_data:
 ```
 
 ### Dockerfile
@@ -106,7 +148,7 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Instalar dependências do sistema
+# Instalar dependencias do sistema
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
@@ -114,13 +156,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Instalar uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
-# Copiar arquivos de dependências
+# Copiar arquivos de dependencias
 COPY pyproject.toml uv.lock ./
 
-# Instalar dependências
+# Instalar dependencias
 RUN uv sync --frozen --no-dev
 
-# Copiar código
+# Copiar codigo
 COPY app/ app/
 
 # Healthcheck
@@ -133,83 +175,108 @@ CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "800
 
 ---
 
-## Segurança
+## Seguranca
 
-### Boas Práticas
+### Autenticacao JWT
 
-| Aspecto | Recomendação |
+O middleware JWT e customizado (`app/auth.py`), sem dependencia de frameworks externos. Rotas publicas (sem autenticacao):
+
+- `GET /health`
+- `POST /auth/login`
+- `GET /metrics`
+
+Todas as demais rotas exigem token JWT no header `Authorization: Bearer <token>`.
+
+```bash
+# Gerar hash bcrypt para senha
+uv run scripts/hash_password.py --password minha_senha --json --username admin
+
+# Configurar usuarios (bcrypt obrigatorio em producao)
+AUTH_USERS='{"admin": "$2b$12$..."}'
+
+# Obter token
+curl -X POST "http://localhost:8000/auth/login?username=admin&password=minha_senha"
+
+# Usar token
+curl -H "Authorization: Bearer <token>" http://localhost:8000/metadata
+```
+
+### Boas Praticas
+
+| Aspecto | Recomendacao |
 |---------|--------------|
-| JWT_SECRET | Mínimo 32 caracteres, único por ambiente |
+| `JWT_SECRET` | Minimo 32 caracteres, unico por ambiente |
 | API Keys | Nunca commitar, usar secrets manager |
-| POSTGRES_URL | Senha forte, SSL em produção |
-| Endpoints | Sempre autenticar exceto health/login |
-| Tools | Validar inputs, não executar código arbitrário |
-| Logs | Não logar dados sensíveis |
+| `REDIS_URL` | Senha forte, TLS em producao |
+| Endpoints | Sempre autenticar exceto health/login/metrics |
+| Tools | Validar inputs, nao executar codigo arbitrario |
+| Logs | Nao logar dados sensiveis (configurar `LOG_FORMAT=json`) |
+| CORS | Configurar `CORS_ORIGINS` com origens especificas |
+| Senhas | Sempre bcrypt (nunca plain text em producao) |
 
-### Validação em Tools
+### Validacao em Tools
 
 ```python
-from agno.exceptions import RetryAgentRun, StopAgentRun
+from app.runtime import tool, RunContext, RetryAgentRun, StopAgentRun
 import re
 
 
+@tool
 def processar_email(run_context: RunContext, email: str) -> str:
-    """Tool com validação de input."""
+    """Processa e valida um endereco de email."""
     # Validar formato
     if not re.match(r'^[\w\.-]+@[\w\.-]+\.\w+$', email):
         raise RetryAgentRun(
-            "Email inválido. Use formato: usuario@dominio.com"
+            "Email invalido. Use formato: usuario@dominio.com"
         )
 
-    # Validar domínio
+    # Validar dominio
     blocked_domains = ['spam.com', 'fake.com']
     domain = email.split('@')[1]
     if domain in blocked_domains:
-        raise StopAgentRun("Domínio bloqueado.")
+        raise StopAgentRun("Dominio bloqueado.")
 
     return f"Email {email} processado"
 ```
 
 ### Rate Limiting
 
-```python
-from slowapi import Limiter
-from slowapi.util import get_remote_address
+O rate limiting e integrado ao template via `app/rate_limiter.py`, com suporte a Redis e fallback em memoria:
 
-limiter = Limiter(key_func=get_remote_address)
-
-@app.post("/run")
-@limiter.limit("10/minute")
-async def run(request: RunRequest):
-    ...
+```bash
+RATE_LIMIT_ENABLED=true
+RATE_LIMIT_REQUESTS_PER_MINUTE=60
 ```
 
 ---
 
 ## Checklist de Deploy
 
-### Pré-Deploy
+### Pre-Deploy
 
-- [ ] Todas as variáveis de ambiente configuradas
-- [ ] JWT_SECRET é único e seguro
-- [ ] API keys configuradas
-- [ ] PostgreSQL acessível
-- [ ] Testes passando
+- [ ] Todas as variaveis de ambiente configuradas
+- [ ] `JWT_SECRET` e unico e seguro (minimo 32 chars)
+- [ ] API keys configuradas no secrets manager
+- [ ] Redis acessivel e saudavel
+- [ ] `AUTH_USERS` com hashes bcrypt (nao plain text)
+- [ ] `CORS_ORIGINS` configurado para origens de producao
+- [ ] Testes passando (`uv run pytest`)
 
 ### Deploy
 
 - [ ] Docker build sem erros
-- [ ] Healthcheck funcionando
-- [ ] Logs sem erros críticos
-- [ ] Métricas sendo coletadas
+- [ ] Healthcheck funcionando (`/health` retorna 200)
+- [ ] Logs sem erros criticos (`LOG_FORMAT=json`)
+- [ ] Metricas sendo coletadas (se `METRICS_ENABLED=true`)
 
-### Pós-Deploy
+### Pos-Deploy
 
-- [ ] Endpoint `/health` retorna 200
-- [ ] Endpoint `/metadata` retorna dados corretos
-- [ ] Autenticação funcionando
-- [ ] `/run` processa requisições
-- [ ] Observabilidade configurada (Langfuse)
+- [ ] `GET /health` retorna 200 (inclui status do Redis)
+- [ ] `GET /metadata` retorna dados corretos
+- [ ] `POST /auth/login` autentica corretamente
+- [ ] `POST /run` processa requisicoes com ferramentas
+- [ ] Consolidacao de memoria funcionando (se habilitada)
+- [ ] Observabilidade configurada (Langfuse / Prometheus / OTEL)
 
 ---
 
@@ -218,27 +285,50 @@ async def run(request: RunRequest):
 ### Endpoints de Health
 
 ```bash
-# Health básico
+# Health basico (inclui status Redis)
 curl http://localhost:8000/health
 
-# Metadata
+# Metadata do modulo
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/metadata
+
+# Metricas Prometheus
+curl http://localhost:8000/metrics
 ```
+
+### Metricas Disponiveis (Prometheus)
+
+| Metrica | Descricao |
+|---------|-----------|
+| `http_requests_total` | Requisicoes por metodo/path/status |
+| `http_request_duration_seconds` | Latencia das requisicoes |
+| `http_requests_in_progress` | Requisicoes em andamento |
+| `agent_runs_total` | Execucoes do agente por status |
+| `agent_run_duration_seconds` | Duracao das execucoes |
+| `memory_consolidation_total` | Consolidacoes por status |
+| `memory_consolidation_duration_seconds` | Latencia da consolidacao |
+| `rate_limit_hits_total` | Requisicoes bloqueadas |
+| `circuit_breaker_state` | Estado do circuit breaker |
 
 ### Logs Estruturados
 
 ```python
-import structlog
+import logging
 
-logger = structlog.get_logger()
+logger = logging.getLogger(__name__)
 
 logger.info(
     "request_processed",
-    conversation_id=conversation_id,
-    latency_ms=latency_ms,
-    tokens_used=tokens_used,
+    extra={
+        "conversation_id": conversation_id,
+        "latency_ms": latency_ms,
+        "tokens_used": tokens_used,
+    },
 )
 ```
+
+Formato configuravel via `LOG_FORMAT`:
+- `json`: Producao (parseavel por ferramentas de log)
+- `text`: Desenvolvimento (legivel no terminal)
 
 ---
 
@@ -246,41 +336,56 @@ logger.info(
 
 ```bash
 # Build e deploy com Docker Compose
-docker-compose -f docker-compose.prod.yml up -d --build
+docker compose -f docker-compose.prod.yml up -d --build
 
 # Ver logs
-docker-compose -f docker-compose.prod.yml logs -f agent
+docker compose -f docker-compose.prod.yml logs -f agent
 
 # Restart
-docker-compose -f docker-compose.prod.yml restart agent
+docker compose -f docker-compose.prod.yml restart agent
 
-# Scale (se usando swarm/k8s)
-docker service scale agent=3
+# Verificar saude
+curl http://localhost:8000/health
 ```
 
 ---
 
-## Migrações em Produção
+## Graceful Shutdown
+
+O sistema implementa shutdown gracioso com as seguintes etapas:
+
+1. Para de aceitar novas requisicoes
+2. Aguarda requisicoes em andamento (ate `SHUTDOWN_TIMEOUT` segundos)
+3. Aguarda consolidacoes de memoria ativas
+4. Fecha conexoes Redis (`close_redis()`)
+5. Flush de traces e metricas
 
 ```bash
-# Rodar migrações Alembic antes do deploy
-make migrate
-
-# Migrações do Agno (sessions, memories)
-make agno-migrate
-
-# Ou manualmente
-uv run python -c "
-from agno.db.postgres import PostgresDb
-db = PostgresDb(db_url='postgresql+psycopg://...')
-db.create_tables()
-"
+SHUTDOWN_TIMEOUT=30  # Segundos para aguardar requisicoes em andamento
 ```
 
 ---
 
-## Referências
+## Referencia de Dependencias
+
+| Pacote | Proposito |
+|--------|-----------|
+| `litellm>=1.55.0` | Abstração multi-provider LLM |
+| `json-repair>=0.30.0` | Reparo de JSON malformado |
+| `fastapi` | Framework web |
+| `uvicorn` | Servidor ASGI |
+| `redis[hiredis]` | Cliente Redis async |
+| `pydantic-settings` | Configuracao via env vars |
+| `bcrypt` / `pyjwt` | Autenticacao |
+| `prometheus-client` | Metricas |
+| `opentelemetry-*` | Tracing distribuido |
+
+---
+
+## Referencias
 
 - [Docker Documentation](https://docs.docker.com)
 - [Uvicorn Deployment](https://www.uvicorn.org/deployment/)
 - [FastAPI Deployment](https://fastapi.tiangolo.com/deployment/)
+- [LiteLLM Documentation](https://docs.litellm.ai/)
+- [Redis Documentation](https://redis.io/docs/)

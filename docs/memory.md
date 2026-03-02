@@ -1,336 +1,296 @@
-# Memory (Memórias e Session Summaries)
+# Memory (Consolidacao LLM-driven de Memoria de Longo Prazo)
 
-O Agno oferece um sistema completo de memória para agentes aprenderem e lembrarem informações sobre usuários.
+O sistema de memoria utiliza consolidacao dirigida por LLM para manter fatos estruturados sobre o usuario/paciente ao longo de conversas longas. A consolidacao e feita por um modelo mais barato que resume periodicamente o historico de mensagens em fatos persistentes no Redis.
+
+Implementacao: `app/memory.py`
 
 ---
 
 ## Conceitos
 
-| Conceito | Descrição |
+| Conceito | Descricao |
 |----------|-----------|
-| **User Memories** | Fatos sobre usuários armazenados automaticamente |
-| **Agentic Memory** | Agente controla quando criar/atualizar memórias |
-| **Session Summaries** | Resumos automáticos de conversas |
-| **MemoryTools** | Ferramentas para CRUD de memórias |
+| **Fatos consolidados** | Markdown estruturado com informacoes conhecidas sobre o usuario, armazenado em `memory:{cid}:facts` |
+| **Log de consolidacao** | Entradas de resumo com timestamp, armazenadas em `memory:{cid}:log` |
+| **Contador de nao-consolidados** | Contador incremental em `memory:{cid}:unconsolidated`, resetado apos cada consolidacao |
+| **Janela de memoria** | Numero de mensagens (`MEMORY_WINDOW`) antes de disparar uma consolidacao |
+| **Modelo de consolidacao** | LLM mais barato usado para sumarizar (configuravel via `MEMORY_CONSOLIDATION_MODEL`) |
 
 ---
 
-## User Memories (Automático)
+## Arquitetura
 
-O agente automaticamente extrai e armazena fatos sobre o usuário após cada interação.
-
-```python
-from agno.agent import Agent
-from agno.db.sqlite import SqliteDb
-from agno.models.openai import OpenAIChat
-
-db = SqliteDb(db_file="tmp/agent.db")
-
-agent = Agent(
-    model=OpenAIChat(id="gpt-4o-mini"),
-    db=db,
-    enable_user_memories=True,  # Memória automática
-)
-
-# Primeira conversa - agente aprende preferências
-agent.print_response(
-    "My name is Sarah and I prefer vegetarian food",
-    user_id="user_123",
-    session_id="session_1",
-)
-
-# Nova sessão - agente lembra
-agent.print_response(
-    "What food should I order?",
-    user_id="user_123",
-    session_id="session_2",
-)
-# Resposta considerará que Sarah é vegetariana
 ```
-
-### Recuperar Memórias
-
-```python
-# Obter memórias do usuário
-memories = agent.get_user_memories(user_id="user_123")
-
-for mem in memories:
-    print(f"- {mem.memory}")
-    print(f"  Topics: {mem.topics}")
+Mensagem do usuario
+       |
+       v
+increment_unconsolidated(cid)   ← +1 para user, +1 para assistant
+       |
+       v
+should_consolidate(cid)?        ← unconsolidated >= MEMORY_WINDOW?
+       |
+      Sim
+       |
+       v
+schedule_consolidation(cid)     ← asyncio.create_task (background)
+       |
+       v
+consolidate(cid)
+  1. Le fatos existentes do Redis (memory:{cid}:facts)
+  2. Le historico recente (get_message_history)
+  3. Envia para LLM de consolidacao com prompt de sistema
+  4. LLM chama tool save_memory(history_entry, memory_update)
+  5. Salva fatos atualizados no Redis
+  6. Adiciona entrada ao log
+  7. Reseta contador de nao-consolidados para 0
 ```
 
 ---
 
-## Agentic Memory (Controlado)
+## Chaves Redis
 
-O agente decide quando criar, atualizar ou deletar memórias usando ferramentas.
+Cada conversa (`cid` = conversation_id) possui as seguintes chaves:
+
+| Chave Redis | Tipo | Descricao |
+|-------------|------|-----------|
+| `memory:{cid}:facts` | String | Markdown com todos os fatos conhecidos sobre o usuario |
+| `memory:{cid}:log` | List | Entradas de historico com timestamp (resumos das consolidacoes) |
+| `memory:{cid}:unconsolidated` | String (int) | Contador de mensagens desde a ultima consolidacao |
+| `memory:{cid}:last_consolidated` | String (int) | Indice da ultima mensagem consolidada |
+
+Todas as chaves possuem TTL configurado por `REDIS_SESSION_TTL` (padrao: 24h).
+
+---
+
+## API Publica (`app/memory.py`)
+
+### `get_memory_context(cid) -> str`
+
+Retorna os fatos consolidados em formato markdown para injecao no system prompt. Retorna string vazia se nao houver fatos ou se o Redis estiver indisponivel.
 
 ```python
-from agno.agent import Agent
-from agno.db.postgres import PostgresDb
-from agno.models.openai import OpenAIChat
+from app.memory import get_memory_context
 
-db = PostgresDb(
-    db_url="postgresql+psycopg://ai:ai@localhost:5532/ai",
-    memory_table="user_memories",
-)
-
-agent = Agent(
-    model=OpenAIChat(id="gpt-4o"),
-    db=db,
-    enable_agentic_memory=True,  # Agente controla memórias
-    markdown=True,
-)
-
-# O agente decide o que memorizar
-agent.print_response(
-    "Remember that I'm allergic to nuts and I work at Acme Corp",
-    user_id="user_123",
-)
-
-# Verificar memórias
-memories = agent.get_user_memories(user_id="user_123")
-for mem in memories:
-    print(f"Memory: {mem.memory}")
+memory_context = await get_memory_context(conversation_id)
+# Retorno exemplo:
+# "## Dados Pessoais\n- Nome: Joao Pereira\n- Convenio: OdontoPrev\n\n## Preferencias\n- Horario: manha"
 ```
 
-### Diferença entre Modos
+### `increment_unconsolidated(cid) -> int`
+
+Incrementa o contador de mensagens nao-consolidadas. Chamado duas vezes por turno (uma para a mensagem do usuario, outra para a resposta do assistente).
 
 ```python
-# ❌ NÃO use ambos juntos - agentic desabilita automático
-agent = Agent(
-    db=db,
-    enable_user_memories=True,
-    enable_agentic_memory=True,  # Desabilita automático!
-)
+from app.memory import increment_unconsolidated
 
-# ✅ Escolha um modo
-# Automático - extrai fatos automaticamente
-agent = Agent(db=db, enable_user_memories=True)
+count = await increment_unconsolidated(conversation_id)
+# count = 5 (por exemplo)
+```
 
-# OU Agentic - agente decide explicitamente
-agent = Agent(db=db, enable_agentic_memory=True)
+### `should_consolidate(cid) -> bool`
+
+Verifica se o contador de nao-consolidados atingiu o limite (`MEMORY_WINDOW`). Retorna `True` quando `unconsolidated >= MEMORY_WINDOW`.
+
+```python
+from app.memory import should_consolidate
+
+if await should_consolidate(conversation_id):
+    # Hora de consolidar
+    ...
+```
+
+### `consolidate(cid) -> None`
+
+Executa a consolidacao LLM-driven:
+
+1. Le os fatos existentes (`memory:{cid}:facts`)
+2. Le o historico recente via `get_message_history(cid, limit=MEMORY_WINDOW * 2)`
+3. Formata as mensagens e envia para o LLM de consolidacao com o prompt de sistema
+4. O LLM chama a tool `save_memory` com `history_entry` (resumo de 2-5 frases) e `memory_update` (fatos atualizados em markdown)
+5. Salva os resultados no Redis e reseta o contador
+
+```python
+from app.memory import consolidate
+
+await consolidate(conversation_id)
+```
+
+### `schedule_consolidation(cid) -> None`
+
+Agenda a consolidacao como tarefa de background via `asyncio.create_task`. Usa um lock por sessao para evitar consolidacoes concorrentes.
+
+```python
+from app.memory import schedule_consolidation
+
+schedule_consolidation(conversation_id)
+# A consolidacao roda em background, nao bloqueia a resposta
+```
+
+### `shutdown_consolidation(timeout) -> None`
+
+Aguarda tarefas de consolidacao ativas durante o shutdown graceful. Cancela tarefas que nao completarem dentro do timeout.
+
+---
+
+## Fluxo no `main.py`
+
+A integracao com o fluxo principal ocorre em `execute_agent()`:
+
+```python
+# 1. Obter contexto de memoria para injecao no prompt
+memory_context = ''
+if settings.MEMORY_CONSOLIDATION_ENABLED:
+    memory_context = await get_memory_context(conversation_id)
+
+# 2. Formatar contexto completo (memoria + session state)
+full_context = formatar_contexto_completo(session_state, memory_context)
+
+# 3. Compilar prompt com contexto injetado
+instructions = compile_prompt(template, session_context=full_context)
+
+# ... execucao do agente ...
+
+# 4. Apos a resposta: incrementar contador e agendar consolidacao se necessario
+if settings.MEMORY_CONSOLIDATION_ENABLED:
+    await increment_unconsolidated(conversation_id)  # mensagem do usuario
+    await increment_unconsolidated(conversation_id)  # resposta do assistente
+    if await should_consolidate(conversation_id):
+        schedule_consolidation(conversation_id)
 ```
 
 ---
 
-## MemoryTools
+## Prompt de Consolidacao
 
-Ferramentas explícitas para gerenciar memórias com tópicos.
+O LLM de consolidacao recebe um prompt de sistema especifico (`_CONSOLIDATION_SYSTEM_PROMPT`) que instrui a:
+
+1. Resumir mensagens recentes em um `history_entry` (2-5 frases com timestamp)
+2. Atualizar `memory_update` com TODOS os fatos conhecidos, mesclando novos com existentes
+3. Remover informacoes desatualizadas ou contraditorias
+4. Organizar fatos por categoria (ex: `## Dados Pessoais`, `## Preferencias`, `## Historico`)
+5. Escrever no idioma da conversa (portugues)
+
+O LLM usa uma tool forcada (`tool_choice`) chamada `save_memory`:
 
 ```python
-from agno.agent import Agent
-from agno.db.postgres import PostgresDb
-from agno.models.openai import OpenAIChat
-from agno.tools.memory import MemoryTools
-
-db = PostgresDb(db_url="postgresql+psycopg://...")
-
-agent = Agent(
-    model=OpenAIChat(id="gpt-4o"),
-    tools=[MemoryTools(db=db, add_instructions=True)],
-    db=db,
-)
-
-# Agente pode criar memórias com tópicos
-agent.print_response(
-    "I prefer vegetarian recipes and I'm allergic to nuts.",
-    user_id="user_123",
-)
+_SAVE_MEMORY_TOOL = {
+    'type': 'function',
+    'function': {
+        'name': 'save_memory',
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'history_entry': {
+                    'type': 'string',
+                    'description': 'Resumo de 2-5 frases com [YYYY-MM-DD HH:MM]'
+                },
+                'memory_update': {
+                    'type': 'string',
+                    'description': 'Markdown com TODOS os fatos conhecidos, atualizados'
+                }
+            },
+            'required': ['history_entry', 'memory_update']
+        }
+    }
+}
 ```
 
 ---
 
-## Session Summaries
+## Injecao no Prompt
 
-Resumos automáticos de conversas para manter contexto sem usar todos os tokens.
+Os fatos consolidados sao injetados no system prompt via `formatar_contexto_completo()` (em `app/tools/formatar_contexto.py`):
 
-### Habilitar Summaries
+```
+--- MEMORIA DE LONGO PRAZO ---
+## Dados Pessoais
+- Nome: Joao Pereira
+- Convenio: OdontoPrev
+- Telefone: (11) 98765-4321
 
-```python
-from agno.agent import Agent
-from agno.db.postgres import PostgresDb
-from agno.models.openai import OpenAIChat
+## Preferencias
+- Horario preferido: manha
+- Dentista preferido: Dra. Maria Silva
 
-db = PostgresDb(
-    db_url="postgresql+psycopg://...",
-    session_table="sessions",
-)
-
-agent = Agent(
-    model=OpenAIChat(id="gpt-4o-mini"),
-    db=db,
-    enable_session_summaries=True,  # Gera resumos automáticos
-)
-
-# Conversa longa
-agent.print_response(
-    "Hi, my name is John and I live in New York",
-    session_id="conversation_123",
-)
-agent.print_response(
-    "I like basketball and hiking",
-    session_id="conversation_123",
-)
-
-# Recuperar resumo
-summary = agent.get_session_summary(session_id="conversation_123")
-if summary:
-    print(f"Summary: {summary.summary}")
-    print(f"Topics: {summary.topics}")
+## Historico
+- Realizou limpeza em janeiro/2025
+--- FIM DA MEMORIA ---
 ```
 
-### Usar Summary no Contexto
+Essa secao aparece antes do contexto de sessao, garantindo que o agente tenha acesso a informacoes de longo prazo mesmo em conversas com historico de mensagens limitado.
 
-```python
-# Sessão existente com summary
-agent = Agent(
-    model=OpenAIChat(id="gpt-4o-mini"),
-    db=db,
-    session_id="conversation_123",
-    add_session_summary_to_context=True,  # Adiciona summary ao contexto
-)
+---
 
-# Agente terá contexto da conversa anterior via summary
-agent.print_response("What were we discussing?")
-```
+## Configuracao
 
-### SessionSummaryManager Customizado
+Variaveis de ambiente (em `.env` ou exportadas):
 
-```python
-from agno.session.summary import SessionSummaryManager
-from agno.models.openai import OpenAIChat
+```bash
+# Habilitar/desabilitar consolidacao
+MEMORY_CONSOLIDATION_ENABLED=true
 
-# Manager com modelo específico
-summary_manager = SessionSummaryManager(
-    model=OpenAIChat(id="gpt-4o-mini"),
-)
+# Numero de mensagens antes de disparar consolidacao
+MEMORY_WINDOW=20
 
-agent = Agent(
-    model=OpenAIChat(id="gpt-4o"),
-    db=db,
-    session_summary_manager=summary_manager,
-)
+# Modelo LLM para consolidacao (mais barato que o principal)
+# Vazio = usa DEFAULT_MODEL
+MEMORY_CONSOLIDATION_MODEL=claude-haiku-4-5-20251001
+
+# Maximo de tokens para a resposta de consolidacao
+MEMORY_CONSOLIDATION_MAX_TOKENS=1024
+
+# TTL das chaves Redis (em segundos)
+REDIS_SESSION_TTL=86400
 ```
 
 ---
 
-## Session Summaries em Teams
+## Concorrencia e Resiliencia
 
-```python
-from agno.agent import Agent
-from agno.team import Team
-from agno.db.postgres import PostgresDb
-from agno.models.openai import OpenAIChat
-
-db = PostgresDb(db_url="postgresql+psycopg://...")
-
-agent = Agent(model=OpenAIChat(id="gpt-4o-mini"))
-
-team = Team(
-    model=OpenAIChat(id="gpt-4o-mini"),
-    members=[agent],
-    db=db,
-    enable_session_summaries=True,
-)
-
-team.print_response(
-    "My name is John and I need help planning a trip",
-)
-```
+| Aspecto | Comportamento |
+|---------|---------------|
+| **Lock por sessao** | `asyncio.Lock` por `cid` evita consolidacoes simultaneas para a mesma conversa |
+| **Background task** | Consolidacao roda em `asyncio.create_task`, nao bloqueia a resposta ao usuario |
+| **Redis indisponivel** | Todas as funcoes retornam valores seguros (string vazia, 0, False) se o Redis estiver fora |
+| **Falha do LLM** | Registra erro no log e na metrica `memory_consolidation_total{status="failed"}`, mas nao afeta a resposta |
+| **JSON malformado** | Usa `json_repair` como fallback para parsing dos argumentos da tool |
+| **Graceful shutdown** | `shutdown_consolidation()` aguarda tarefas ativas antes de encerrar |
 
 ---
 
-## Adicionar Memórias ao Contexto
+## Metricas Prometheus
 
-```python
-agent = Agent(
-    model=OpenAIChat(id="gpt-4o-mini"),
-    db=db,
-    enable_user_memories=True,
-    add_memories_to_context=True,  # Inclui memórias no prompt
-)
-```
-
----
-
-## Compartilhar Memórias Entre Agentes
-
-```python
-from uuid import uuid4
-from agno.agent import Agent
-from agno.db.sqlite import SqliteDb
-
-db = SqliteDb(db_file="tmp/shared.db")
-user_id = "john@example.com"
-
-# Agente 1 - aprende sobre o usuário
-agent_1 = Agent(
-    model=OpenAIChat(id="gpt-4o-mini"),
-    db=db,
-    enable_user_memories=True,
-)
-
-agent_1.print_response(
-    "My name is John and I love hiking",
-    user_id=user_id,
-)
-
-# Agente 2 - compartilha mesmas memórias
-agent_2 = Agent(
-    model=OpenAIChat(id="gpt-4o-mini"),
-    db=db,
-    enable_user_memories=True,
-)
-
-# Agent 2 sabe sobre John
-agent_2.print_response(
-    "What are my hobbies?",
-    user_id=user_id,
-)
-```
-
----
-
-## Limpar Memórias
-
-```python
-# Limpar todas as memórias do banco
-db.clear_memories()
-
-# Ou via agente (se agentic memory)
-agent.print_response(
-    "Forget everything about me",
-    user_id="user_123",
-)
-```
-
----
-
-## Comparação de Modos
-
-| Feature | User Memories | Agentic Memory | MemoryTools |
-|---------|---------------|----------------|-------------|
-| **Controle** | Automático | Agente decide | Explícito via tools |
-| **Quando usar** | Sempre aprender | Seletivo | Controle total |
-| **Tópicos** | Automático | Automático | Configurável |
-| **CRUD** | Create only | Full CRUD | Full CRUD |
-| **Token cost** | Baixo | Médio | Baixo |
-
----
-
-## Boas Práticas
-
-| Prática | Descrição |
+| Metrica | Descricao |
 |---------|-----------|
-| **Escolha um modo** | Não misture enable_user_memories com enable_agentic_memory |
-| **Use user_id** | Sempre passe user_id para isolar memórias por usuário |
-| **Session summaries** | Use para conversas longas para economizar tokens |
-| **Limpe periodicamente** | Remova memórias desatualizadas |
+| `memory_consolidation_total{status="scheduled"}` | Consolidacoes agendadas |
+| `memory_consolidation_total{status="completed"}` | Consolidacoes concluidas com sucesso |
+| `memory_consolidation_total{status="failed"}` | Consolidacoes que falharam |
+| `memory_consolidation_duration_seconds` | Duracao da consolidacao (histogram) |
 
 ---
 
-## Referências
+## Diferenca: Memoria vs. Session State
 
-- [Agno Memory](https://docs.agno.com/basics/memory/overview)
-- [Agno Session Summaries](https://docs.agno.com/basics/sessions/session-summaries)
+| Aspecto | Memoria Consolidada | Session State |
+|---------|---------------------|---------------|
+| **Arquivo** | `app/memory.py` | `app/storage.py` |
+| **Chave Redis** | `memory:{cid}:facts` | `session:{cid}:state` |
+| **Conteudo** | Fatos de longo prazo (markdown) | Dados estruturados da sessao (JSON) |
+| **Atualizacao** | Periodica (a cada MEMORY_WINDOW mensagens) | Imediata (via tools do agente) |
+| **Mecanismo** | LLM consolida historico | Tools gravam diretamente |
+| **Proposito** | Reter informacoes entre muitos turnos | Dados operacionais da sessao atual |
+| **Injecao** | `--- MEMORIA DE LONGO PRAZO ---` | `--- CONTEXTO DA SESSAO ---` |
+
+Ambos sao combinados por `formatar_contexto_completo()` e injetados no system prompt.
+
+---
+
+## Boas Praticas
+
+| Pratica | Descricao |
+|---------|-----------|
+| **Use modelo barato** | Configure `MEMORY_CONSOLIDATION_MODEL` com um modelo economico (ex: claude-haiku) |
+| **Ajuste MEMORY_WINDOW** | Valores menores consolidam mais frequentemente (mais custo, menos perda). Valores maiores economizam chamadas LLM |
+| **Monitore metricas** | Acompanhe `memory_consolidation_total` para detectar falhas |
+| **Combine com session state** | Memoria de longo prazo complementa o session state — use ambos |
+| **Nao dependa exclusivamente** | A consolidacao e assincrona e pode falhar. O session state e mais confiavel para dados criticos |

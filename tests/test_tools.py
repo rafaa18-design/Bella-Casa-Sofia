@@ -1,9 +1,8 @@
 """Testes para as ferramentas de atendimento da clínica odontológica."""
 
 import pytest
-from agno.exceptions import RetryAgentRun, StopAgentRun
-from agno.run import RunContext
 
+from app.runtime import RetryAgentRun, RunContext, StopAgentRun
 from app.tools import (
     agendar_consulta,
     buscar_paciente,
@@ -16,23 +15,20 @@ from app.tools import (
 )
 
 
-# Helper to get the actual callable function from Agno Function wrapper
-def call_tool(tool_func, *args, **kwargs):
-    """Call a tool function, handling Agno Function wrapper."""
-    if hasattr(tool_func, 'func'):
-        return tool_func.func(*args, **kwargs)
-    elif hasattr(tool_func, 'entrypoint'):
-        return tool_func.entrypoint(*args, **kwargs)
+# Helper to get the actual callable function from ToolDefinition
+def call_tool(tool_def, *args, **kwargs):
+    """Call a tool function, extracting func from ToolDefinition."""
+    if hasattr(tool_def, 'func'):
+        return tool_def.func(*args, **kwargs)
     else:
-        return tool_func(*args, **kwargs)
+        return tool_def(*args, **kwargs)
 
 
 def create_run_context(session_state: dict | None = None) -> RunContext:
     """Create a RunContext for testing tools."""
     return RunContext(
-        run_id='test-run-id',
         session_id='test-session-id',
-        session_state=session_state,
+        session_state=session_state or {},
     )
 
 

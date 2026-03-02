@@ -1,7 +1,6 @@
 """Storage backends for session state and persistence.
 
-Redis is used for session state and caching.
-PostgreSQL is used for persistent storage via Agno's PostgresDb.
+Redis is used for session state, caching, and message history.
 
 This module includes graceful fallback when Redis is unavailable,
 allowing the application to continue operating in degraded mode.
@@ -214,7 +213,10 @@ async def add_message_to_history(
     }
 
     key = _history_key(conversation_id)
-    max_messages = settings.NUM_HISTORY_RUNS * 2
+    if settings.MEMORY_CONSOLIDATION_ENABLED:
+        max_messages = settings.MEMORY_WINDOW * 2
+    else:
+        max_messages = settings.NUM_HISTORY_RUNS * 2
 
     # Always store in memory
     if key not in _history_store:
@@ -242,7 +244,10 @@ async def get_message_history(
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
     """Get message history from Redis (with in-memory fallback)."""
-    limit = limit or settings.NUM_HISTORY_RUNS * 2
+    if settings.MEMORY_CONSOLIDATION_ENABLED:
+        limit = limit or settings.MEMORY_WINDOW * 2
+    else:
+        limit = limit or settings.NUM_HISTORY_RUNS * 2
     key = _history_key(conversation_id)
 
     client = await get_redis()
@@ -344,69 +349,3 @@ async def cache_delete(key: str):
         logger.warning(f'Failed to delete from Redis cache: {e}')
 
 
-# =============================================================================
-# PostgreSQL Database (Optional - for Agno persistent features)
-# =============================================================================
-
-_postgres_db = None
-
-
-def get_postgres_db():
-    """Get PostgreSQL database instance with connection pooling.
-
-    The connection pool is configured via SQLAlchemy engine options.
-    Pool settings are configured via settings:
-    - POSTGRES_POOL_SIZE: Number of connections to keep open
-    - POSTGRES_POOL_MAX_OVERFLOW: Max additional connections allowed
-    - POSTGRES_POOL_TIMEOUT: Seconds to wait for available connection
-    - POSTGRES_POOL_RECYCLE: Seconds before recycling connections
-
-    Note: Agno's PostgresDb uses SQLAlchemy internally, which manages
-    the connection pool automatically. The pool settings are passed
-    via the URL or engine configuration.
-    """
-    global _postgres_db
-
-    if _postgres_db is None:
-        from agno.db.postgres import PostgresDb
-
-        # Note: PostgresDb handles pooling internally via SQLAlchemy.
-        # Pool configuration is typically done via the URL or SQLAlchemy settings.
-        # For advanced pool configuration, you may need to configure the
-        # underlying SQLAlchemy engine or use environment variables.
-        _postgres_db = PostgresDb(db_url=settings.POSTGRES_URL)
-        logger.info(
-            f'PostgreSQL database configured '
-            f'(pool settings: size={settings.POSTGRES_POOL_SIZE}, '
-            f'max_overflow={settings.POSTGRES_POOL_MAX_OVERFLOW})'
-        )
-
-    return _postgres_db
-
-
-# =============================================================================
-# Redis DB (Agno session storage via Redis - faster than PostgreSQL)
-# =============================================================================
-
-_redis_db = None
-
-
-def get_redis_db():
-    """Get Redis database instance for Agno agent storage.
-
-    Uses the same Redis instance as the session cache, but through
-    Agno's RedisDb interface for sessions, memories, and summaries.
-    This is much faster than PostgreSQL for remote databases.
-    """
-    global _redis_db
-
-    if _redis_db is None:
-        from agno.db.redis import RedisDb
-
-        _redis_db = RedisDb(
-            db_url=settings.REDIS_URL,
-            db_prefix='agno',
-        )
-        logger.info('Redis DB configured for agent storage')
-
-    return _redis_db

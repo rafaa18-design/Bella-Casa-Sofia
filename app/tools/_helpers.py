@@ -3,7 +3,7 @@
 import random
 import string
 
-from agno.run import RunContext
+from app.runtime import RunContext
 
 from app.tools._mock_data import HORARIOS_BASE
 

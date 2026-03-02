@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     )
 
     # ==========================================================================
-    # Authentication (Agno JWT Middleware)
+    # Authentication (JWT)
     # ==========================================================================
     AUTH_ENABLED: bool = True
     JWT_SECRET: str = ''  # Required if AUTH_ENABLED=True
@@ -115,7 +115,7 @@ class Settings(BaseSettings):
     )
 
     MAX_TURNS: int = 10
-    NUM_HISTORY_RUNS: int = 3
+    NUM_HISTORY_RUNS: int = 2
     COMPRESS_TOOL_RESULTS: bool = True
     TOOL_CALL_LIMIT: int = 5
     MAX_OUTPUT_TOKENS: int = 2048
@@ -123,6 +123,13 @@ class Settings(BaseSettings):
     # Memory features
     ENABLE_USER_MEMORIES: bool = False
     ENABLE_SESSION_SUMMARIES: bool = False
+
+    # Memory Consolidation (LLM-driven)
+    MEMORY_CONSOLIDATION_ENABLED: bool = True
+    MEMORY_WINDOW: int = 20
+    MEMORY_CONSOLIDATION_MODEL: str = ''  # empty = DEFAULT_MODEL
+    MEMORY_CONSOLIDATION_MAX_TOKENS: int = 2048
+    TOOL_OUTPUT_MAX_CHARS: int = 2000
 
     # Model optimization
     CACHE_SYSTEM_PROMPT: bool = True

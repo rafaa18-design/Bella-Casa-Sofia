@@ -1,386 +1,416 @@
-# Input/Output (Schemas e Validação)
+# Input/Output (Schemas e Contrato AgentBench)
 
-O Agno suporta validação de entrada e saída estruturada usando Pydantic.
+O sistema segue o contrato AgentBench com schemas Pydantic bem definidos para entrada e saida. Nao ha structured output do LLM -- o agente retorna texto livre via `AgentResponse.content`, que e encapsulado nos modelos de resposta.
 
 ---
 
 ## Conceitos
 
-| Conceito | Descrição |
+| Conceito | Descricao |
 |----------|-----------|
-| **input_schema** | Schema Pydantic para validar entrada |
-| **output_schema** | Schema para estruturar saída |
-| **structured_outputs** | Saída estruturada nativa do modelo |
-| **response_model** | Alias para output_schema |
+| **RunRequest** | Schema de entrada com `list[InputItem]`, `conversation_id`, `model` |
+| **RunResponse** | Resposta de producao com `FinalOutput` e `Metrics` |
+| **RunDebugResponse** | Resposta de debug com trajetoria completa |
+| **InputItem** | Item multimodal individual (texto, imagem, audio, etc.) |
+| **FinalOutput** | Mensagem final do agente, estado da sessao e acoes executadas |
+| **AgentResponse** | Resultado interno do agent loop (conteudo de texto, tokens, tools usadas) |
 
 ---
 
-## Input Schema
+## Entrada: RunRequest
 
-### Em Agentes
+Definido em `app/models.py`. Enviado para os endpoints `/run` e `/run_debug`:
 
 ```python
-from typing import List
 from pydantic import BaseModel, Field
-from agno.agent import Agent
-from agno.models.openai import OpenAIChat
-from agno.tools.hackernews import HackerNewsTools
+from typing import Literal
 
+InputType = Literal['text', 'image', 'audio', 'document', 'video']
 
-class ResearchTopic(BaseModel):
-    """Structured research topic with validation."""
-    topic: str = Field(description="Main research topic")
-    focus_areas: List[str] = Field(description="Specific areas to focus on")
-    target_audience: str = Field(description="Who this research is for")
-    sources_required: int = Field(default=5, ge=1, le=20)
+class InputItem(BaseModel):
+    """Item de entrada multimodal."""
+    type: InputType = Field(..., description='Tipo: text, image, audio, document, video')
+    content: str = Field(..., description='Texto puro ou conteudo base64')
+    filename: str | None = Field(None, description='Nome original do arquivo')
+    mime_type: str | None = Field(None, description='Tipo MIME (ex: image/png)')
 
-
-agent = Agent(
-    name="Research Agent",
-    model=OpenAIChat(id="gpt-4o-mini"),
-    tools=[HackerNewsTools()],
-    input_schema=ResearchTopic,  # Valida entrada
-)
-
-# Passar dict que será validado
-agent.print_response(
-    input={
-        "topic": "AI Trends",
-        "focus_areas": ["LLMs", "Agents"],
-        "target_audience": "Developers",
-        "sources_required": 5,
-    }
-)
-
-# Ou passar modelo Pydantic diretamente
-agent.print_response(
-    input=ResearchTopic(
-        topic="AI Trends",
-        focus_areas=["LLMs", "Agents"],
-        target_audience="Developers",
+class RunRequest(BaseModel):
+    """Requisicao para /run e /run_debug."""
+    input: list[InputItem] = Field(..., min_length=1, max_length=20)
+    conversation_id: str = Field(..., min_length=1)
+    model: str | None = Field(None, description='Override opcional de modelo')
+    received_at: float | None = Field(
+        None, description='Timestamp Unix de quando a mensagem foi recebida pelo conector'
     )
-)
 ```
 
-### Em Teams
+### Exemplo de Request JSON
 
-```python
-from agno.team import Team
-from pydantic import BaseModel, Field
+```json
+{
+  "input": [
+    {"type": "text", "content": "Quais horarios disponiveis para amanha?"}
+  ],
+  "conversation_id": "conv-abc-123",
+  "model": null
+}
+```
 
+### Request Multimodal
 
-class ResearchProject(BaseModel):
-    project_name: str = Field(description="Project name")
-    research_topics: List[str] = Field(min_length=1)
-    target_audience: str
-    depth_level: str = Field(pattern="^(basic|intermediate|advanced)$")
-    max_sources: int = Field(ge=3, le=20, default=10)
-
-
-team = Team(
-    name="Research Team",
-    model=OpenAIChat(id="gpt-4o-mini"),
-    members=[hackernews_agent, web_researcher],
-    input_schema=ResearchProject,
-)
-
-team.print_response(
-    input={
-        "project_name": "AI Framework Comparison",
-        "research_topics": ["LangChain", "CrewAI", "Agno"],
-        "target_audience": "AI Engineers",
-        "depth_level": "intermediate",
-        "max_sources": 15,
+```json
+{
+  "input": [
+    {"type": "text", "content": "O que aparece nesta imagem?"},
+    {
+      "type": "image",
+      "content": "iVBORw0KGgoAAAANSUh...",
+      "mime_type": "image/png",
+      "filename": "foto.png"
     }
-)
+  ],
+  "conversation_id": "conv-abc-123"
+}
 ```
 
-### Em Workflows
+### Limites
+
+| Parametro | Limite |
+|-----------|--------|
+| `input` items | Minimo 1, maximo 20 |
+| `conversation_id` | Minimo 1 caractere |
+| `model` | Opcional -- usa `DEFAULT_MODEL` do `.env` se nao informado |
+
+---
+
+## Saida: RunResponse (Producao)
+
+Retornado pelo endpoint `/run`. Definido em `app/models.py`:
 
 ```python
-from agno.workflow import Workflow
-from agno.db.sqlite import SqliteDb
+class ActionTaken(BaseModel):
+    """Acao executada pelo agente."""
+    tool: str
+    success: bool
+    error: str | None = None
 
+class FinalOutput(BaseModel):
+    """Saida final do agente."""
+    message: str
+    state: dict[str, Any] | None = None
+    actions_taken: list[ActionTaken] | None = None
 
-class ResearchRequest(BaseModel):
-    topic: str = Field(description="Research topic")
-    depth: int = Field(ge=1, le=10, description="Research depth")
+class Metrics(BaseModel):
+    """Metricas de execucao."""
+    latency_ms: float
+    tokens_used: int | None = None
+    cost_estimate: float | None = None
 
+class RunResponse(BaseModel):
+    """Resposta do endpoint /run."""
+    conversation_id: str
+    final_output: FinalOutput
+    metrics: Metrics | None = None
+```
 
-workflow = Workflow(
-    name="Research Workflow",
-    db=SqliteDb(db_file="tmp/workflow.db"),
-    steps=[research_step, summary_step],
-    input_schema=ResearchRequest,  # Valida entrada
-)
+### Exemplo de Response JSON
 
-# Válido
-workflow.print_response(
-    input={"topic": "AI trends", "depth": 8},
-    markdown=True,
-)
-
-# Inválido - vai falhar
-# workflow.print_response(
-#     input={"topic": 123, "depth": "high"},  # Tipos errados
-# )
+```json
+{
+  "conversation_id": "conv-abc-123",
+  "final_output": {
+    "message": "Temos horarios disponiveis amanha as 9h, 10h30 e 14h. Qual voce prefere?",
+    "state": {
+      "nome": "Maria Silva",
+      "convenio": "OdontoPrev"
+    },
+    "actions_taken": [
+      {"tool": "verificar_disponibilidade", "success": true, "error": null}
+    ]
+  },
+  "metrics": {
+    "latency_ms": 1234.56,
+    "tokens_used": 850,
+    "cost_estimate": null
+  }
+}
 ```
 
 ---
 
-## Output Schema
+## Saida: RunDebugResponse (Debug)
 
-### Estrutura de Saída
+Retornado pelo endpoint `/run_debug`. Inclui a trajetoria completa de execucao:
 
 ```python
-from pydantic import BaseModel, Field
-from typing import List
-from agno.agent import Agent
-from agno.models.openai import OpenAIChat
+class LLMCall(BaseModel):
+    """Detalhes de uma chamada LLM."""
+    model: str
+    input_tokens: int
+    output_tokens: int
 
+class PromptDebug(BaseModel):
+    """Informacoes de debug do prompt."""
+    state_key: str | None = None
+    state_value: str | None = None
+    base_system_prompt: str | None = None
+    final_system_prompt_used: str | None = None
 
-class MovieScript(BaseModel):
-    """Structured movie script output."""
-    title: str = Field(description="Movie title")
-    genre: str = Field(description="Movie genre")
-    setting: str = Field(description="Where the movie takes place")
-    characters: List[str] = Field(description="Main character names")
-    plot_summary: str = Field(description="Brief plot summary")
+class TrajectoryStage(BaseModel):
+    """Estagio individual na trajetoria de execucao."""
+    stage_id: str
+    type: str = Field(..., description='agent, executor, router, memory, custom')
+    sequence: int
+    prompt_debug: PromptDebug | None = None
+    llm_calls: list[LLMCall] | None = None
+    output: dict[str, Any] | None = None
+    errors: list[str] | None = None
+    latency_ms: float
 
+class DebugMetrics(BaseModel):
+    """Metricas estendidas para modo debug."""
+    total_latency_ms: float
+    total_tokens: dict[str, int] | None = None
+    llm_calls: int
 
-agent = Agent(
-    model=OpenAIChat(id="gpt-4o"),
-    description="You write movie scripts",
-    output_schema=MovieScript,  # Força estrutura de saída
-)
-
-response = agent.run("Write a sci-fi movie about Mars colonization")
-
-# Acesso tipado
-script: MovieScript = response.content
-print(f"Title: {script.title}")
-print(f"Genre: {script.genre}")
-print(f"Characters: {', '.join(script.characters)}")
+class RunDebugResponse(BaseModel):
+    """Resposta do endpoint /run_debug."""
+    conversation_id: str
+    final_output: FinalOutput
+    trajectory: list[TrajectoryStage]
+    metrics: DebugMetrics
 ```
 
-### Análise Estruturada
+### Exemplo de Response Debug JSON
 
-```python
-class StockAnalysis(BaseModel):
-    symbol: str
-    company_name: str
-    current_price: float
-    recommendation: str = Field(description="Buy, Hold, or Sell")
-    reasoning: str
-    risk_level: str = Field(pattern="^(low|medium|high)$")
-
-
-agent = Agent(
-    model=OpenAIChat(id="gpt-4o"),
-    output_schema=StockAnalysis,
-)
-
-response = agent.run("Analyze Apple stock")
-analysis: StockAnalysis = response.content
-
-print(f"Recommendation: {analysis.recommendation}")
-print(f"Risk: {analysis.risk_level}")
-```
-
----
-
-## Structured Outputs (Nativo)
-
-Alguns modelos suportam structured outputs nativamente:
-
-```python
-from agno.agent import Agent
-from agno.models.openai import OpenAIChat
-
-
-class TaskList(BaseModel):
-    tasks: List[str]
-    priority: str
-    deadline: str
-
-
-agent = Agent(
-    model=OpenAIChat(id="gpt-4o"),
-    output_schema=TaskList,
-    structured_outputs=True,  # Usa feature nativa do modelo
-)
-```
-
----
-
-## JSON Mode
-
-```python
-from agno.agent import Agent
-from agno.models.openai import OpenAIChat
-
-
-class Response(BaseModel):
-    answer: str
-    confidence: float
-
-
-agent = Agent(
-    model=OpenAIChat(id="gpt-4o"),
-    output_schema=Response,
-    use_json_mode=True,  # Força JSON válido
-    parse_response=True,  # Parseia para o modelo
-)
+```json
+{
+  "conversation_id": "conv-abc-123",
+  "final_output": {
+    "message": "Consulta agendada para amanha as 9h.",
+    "state": {"nome": "Maria Silva"},
+    "actions_taken": [
+      {"tool": "verificar_disponibilidade", "success": true, "error": null},
+      {"tool": "agendar_consulta", "success": true, "error": null}
+    ]
+  },
+  "trajectory": [
+    {
+      "stage_id": "main",
+      "type": "agent",
+      "sequence": 1,
+      "prompt_debug": {
+        "final_system_prompt_used": "Voce e um assistente..."
+      },
+      "llm_calls": [
+        {
+          "model": "claude-sonnet-4-20250514",
+          "input_tokens": 1200,
+          "output_tokens": 350
+        }
+      ],
+      "latency_ms": 2345.67
+    }
+  ],
+  "metrics": {
+    "total_latency_ms": 2345.67,
+    "total_tokens": {"input": 1200, "output": 350},
+    "llm_calls": 1
+  }
+}
 ```
 
 ---
 
-## Parser Model
+## AgentResponse (Interno)
 
-Use um modelo secundário para parsear respostas:
+O resultado interno do agent loop (`app/agent_loop.py`) e um dataclass, nao um schema de API:
 
 ```python
-from agno.agent import Agent
-from agno.models.openai import OpenAIChat
+@dataclass
+class AgentResponse:
+    """Resultado do agent loop."""
+    content: str                              # Texto final do agente
+    messages: list[dict[str, Any]]            # Historico completo de mensagens
+    input_tokens: int = 0                     # Total de tokens de entrada
+    output_tokens: int = 0                    # Total de tokens de saida
+    tools_used: list[str] = field(default_factory=list)  # Nomes das tools chamadas
+    session_state: dict[str, Any] = field(default_factory=dict)  # Estado atualizado
+```
 
+O `AgentResponse.content` e uma string de texto livre -- o agente nao retorna JSON estruturado. O texto e encapsulado em `FinalOutput.message` na resposta da API.
 
-class Summary(BaseModel):
-    main_points: List[str]
-    conclusion: str
+---
 
+## Fluxo Completo: Request ate Response
 
-agent = Agent(
-    model=OpenAIChat(id="gpt-4o"),  # Modelo principal
-    output_schema=Summary,
-    parser_model="openai:gpt-3.5-turbo",  # Modelo para parsing
-    parser_model_prompt="Extract the main points and conclusion.",
+```
+POST /run (RunRequest)
+    |
+    v
+parse_multimodal_input(request.input)   --> (text_message, images)
+    |
+    v
+get_session_state(conversation_id)       --> session_state (Redis)
+get_agent_instructions()                 --> template do prompt
+get_memory_context(conversation_id)      --> fatos consolidados
+    |
+    v
+compile_prompt(template, session_context)
+build_system_messages(instructions, text, images, history)
+    |
+    v
+run_agent_loop(messages, tools, run_context, model)
+    |   |
+    |   +-- litellm.acompletion() --> tool_calls?
+    |   |   +-- Sim --> ToolRegistry.execute() --> repete
+    |   |   +-- Nao --> AgentResponse(content=..., tokens=..., tools_used=...)
+    |   |
+    |   +-- RetryAgentRun --> feedback como tool result, continua
+    |   +-- StopAgentRun  --> para imediatamente
+    |
+    v
+extract_response_text(response)          --> string da mensagem
+extract_actions_from_response(response)  --> list[ActionTaken]
+    |
+    v
+RunResponse(
+    conversation_id=...,
+    final_output=FinalOutput(message=..., state=..., actions_taken=...),
+    metrics=Metrics(latency_ms=..., tokens_used=...)
 )
 ```
 
 ---
 
-## Output Model
+## Endpoint /metadata
 
-Modelo dedicado para estruturar a saída:
+O endpoint `/metadata` declara as capacidades do modulo, incluindo tipos de entrada suportados:
 
-```python
-agent = Agent(
-    model=OpenAIChat(id="gpt-4o"),
-    output_schema=Summary,
-    output_model="openai:gpt-4o-mini",  # Modelo para output
-    output_model_prompt="Format the response according to the schema.",
-)
+```json
+{
+  "module_id": "meu-agente",
+  "version": "1.0.0",
+  "capabilities": {
+    "supports_multi_stage": false,
+    "supports_dynamic_system_prompt": true,
+    "supports_cross_model": true,
+    "supports_jailbreak_tests": true
+  },
+  "input_types": {
+    "supported_types": ["text", "image", "audio"],
+    "allowed_formats": {
+      "image": ["jpeg", "jpg", "png", "webp"],
+      "audio": ["mp3", "wav", "ogg"]
+    }
+  },
+  "tools_exposed": [
+    {"name": "listar_servicos", "description": "..."},
+    {"name": "verificar_disponibilidade", "description": "..."}
+  ]
+}
 ```
 
 ---
 
-## Validação Customizada
+## Tratamento de Erros
+
+Quando ocorre um erro na execucao do agente, a resposta ainda segue o schema padrao:
+
+### /run com erro
+
+```json
+{
+  "conversation_id": "conv-abc-123",
+  "final_output": {
+    "message": "An error occurred while processing your request.",
+    "state": null,
+    "actions_taken": null
+  },
+  "metrics": {
+    "latency_ms": 150.0,
+    "tokens_used": null,
+    "cost_estimate": null
+  }
+}
+```
+
+### /run_debug com erro
+
+```json
+{
+  "conversation_id": "conv-abc-123",
+  "final_output": {
+    "message": "An error occurred: Connection timeout",
+    "state": null,
+    "actions_taken": null
+  },
+  "trajectory": [
+    {
+      "stage_id": "error",
+      "type": "agent",
+      "sequence": 1,
+      "prompt_debug": {"final_system_prompt_used": "Error occurred"},
+      "llm_calls": [],
+      "latency_ms": 150.0,
+      "errors": ["Connection timeout"]
+    }
+  ],
+  "metrics": {
+    "total_latency_ms": 150.0,
+    "total_tokens": {"input": 0, "output": 0},
+    "llm_calls": 0
+  }
+}
+```
+
+---
+
+## Validacao Customizada
+
+Como os schemas usam Pydantic v2, voce pode adicionar validadores customizados:
 
 ```python
 from pydantic import BaseModel, Field, field_validator
 
+class InputItem(BaseModel):
+    type: InputType
+    content: str
+    filename: str | None = None
+    mime_type: str | None = None
 
-class UserInput(BaseModel):
-    email: str
-    age: int = Field(ge=0, le=150)
-    preferences: List[str] = Field(max_length=10)
-
-    @field_validator("email")
+    @field_validator('content')
     @classmethod
-    def validate_email(cls, v: str) -> str:
-        if "@" not in v:
-            raise ValueError("Invalid email format")
-        return v.lower()
+    def content_not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError('Conteudo nao pode ser vazio')
+        return v
 
-
-agent = Agent(
-    model=OpenAIChat(id="gpt-4o-mini"),
-    input_schema=UserInput,
-)
-
-# Falha na validação
-# agent.run(input={"email": "invalid", "age": 25, "preferences": []})
+    @field_validator('mime_type')
+    @classmethod
+    def validate_mime(cls, v: str | None) -> str | None:
+        if v and '/' not in v:
+            raise ValueError('MIME type invalido')
+        return v
 ```
 
 ---
 
-## Input e Output Juntos
+## Boas Praticas
 
-```python
-class QueryInput(BaseModel):
-    question: str
-    context: str = ""
-    max_length: int = Field(default=500, le=2000)
-
-
-class QueryOutput(BaseModel):
-    answer: str
-    confidence: float = Field(ge=0, le=1)
-    sources: List[str] = []
-
-
-agent = Agent(
-    model=OpenAIChat(id="gpt-4o"),
-    input_schema=QueryInput,
-    output_schema=QueryOutput,
-)
-
-response = agent.run(
-    input=QueryInput(
-        question="What is Python?",
-        context="Programming language",
-        max_length=200,
-    )
-)
-
-output: QueryOutput = response.content
-print(f"Answer: {output.answer}")
-print(f"Confidence: {output.confidence}")
-```
-
----
-
-## Em Teams
-
-```python
-from agno.team import Team
-
-
-class TeamInput(BaseModel):
-    task: str
-    resources: List[str] = []
-
-
-class TeamOutput(BaseModel):
-    result: str
-    contributors: List[str]
-    time_spent: str
-
-
-team = Team(
-    model=OpenAIChat(id="gpt-4o"),
-    members=[researcher, writer],
-    input_schema=TeamInput,
-    output_schema=TeamOutput,
-)
-```
-
----
-
-## Boas Práticas
-
-| Prática | Descrição |
+| Pratica | Descricao |
 |---------|-----------|
-| **Use Field()** | Sempre adicione descriptions nos campos |
-| **Valide ranges** | Use ge, le, min_length, max_length |
-| **Defaults sensatos** | Forneça valores default quando apropriado |
-| **Padrões regex** | Use pattern para strings com formato |
-| **Docstrings** | Adicione docstrings nas classes |
+| **Sempre envie conversation_id** | Necessario para historico, estado e memoria |
+| **Use Field()** | Adicione descriptions nos campos para documentacao automatica |
+| **Valide no schema** | Use min_length, max_length, ge, le no Pydantic |
+| **Trate erros no response** | Verifique se `actions_taken` contem erros |
+| **Use /run_debug** | Para investigar problemas, use o endpoint debug com trajetoria |
+| **Nao espere JSON estruturado** | O agente retorna texto livre; use tools para acoes estruturadas |
 
 ---
 
-## Referências
+## Referencias
 
-- [Agno Input/Output](https://docs.agno.com/basics/input-output/overview)
-- [Agno Structured Outputs](https://docs.agno.com/basics/structured-output)
-- [Pydantic Documentation](https://docs.pydantic.dev/)
+- [Pydantic v2 Documentation](https://docs.pydantic.dev/)
+- [FastAPI Request/Response](https://fastapi.tiangolo.com/tutorial/response-model/)
+- [LiteLLM Completion](https://docs.litellm.ai/docs/completion/input)

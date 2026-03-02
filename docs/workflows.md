@@ -1,166 +1,209 @@
 # Workflows
 
-Workflows permitem orquestrar múltiplos passos em pipelines complexos.
+Workflows permitem orquestrar multiplos passos em pipelines complexos, onde a saida de um passo alimenta o proximo. Sao uteis para processos que envolvem pesquisa, analise, revisao e publicacao em sequencia.
 
 ---
 
-## Conceitos de Workflows
+## Abordagem
 
-| Conceito | Descrição |
-|----------|-----------|
-| **Workflow** | Orquestrador de passos sequenciais |
-| **Step** | Unidade de execução (agent, team, ou função) |
-| **StepInput** | Entrada para um passo |
-| **StepOutput** | Saída de um passo |
-| **Executor** | Classe/função customizada para lógica complexa |
-| **Condition** | Passo condicional baseado em avaliação |
+Workflows sequenciais sao implementados como funcoes async Python que chamam `run_agent_loop()` em sequencia com diferentes instrucoes e tools.
 
 ---
 
-## Workflow Básico com Agentes
+## Como Implementar
+
+### 1. Workflow como Funcao Async
+
+Um workflow e simplesmente uma funcao que encadeia chamadas:
 
 ```python
-from agno.agent import Agent
-from agno.workflow import Workflow, Step
-from agno.db.sqlite import SqliteDb
+# app/workflows.py
 
-pesquisador = Agent(
-    name="Pesquisador",
-    role="Pesquisa informações sobre o tópico",
-)
+import logging
+from dataclasses import dataclass, field
+from typing import Any
 
-redator = Agent(
-    name="Redator",
-    role="Escreve conteúdo baseado na pesquisa",
-)
+from app.agent import build_system_messages, get_litellm_model
+from app.agent_loop import run_agent_loop
+from app.runtime import RunContext, ToolRegistry
 
-workflow = Workflow(
-    name="Pipeline de Conteúdo",
-    description="Pesquisa e cria conteúdo automaticamente",
-    db=SqliteDb(
-        session_table="workflow_session",
-        db_file="tmp/workflow.db",
-    ),
-    steps=[
-        Step(name="Pesquisa", agent=pesquisador),
-        Step(name="Redação", agent=redator),
-    ],
-)
+logger = logging.getLogger(__name__)
 
-workflow.print_response(input="Tendências de IA em 2024", markdown=True)
+
+@dataclass
+class WorkflowResult:
+    """Resultado de um workflow."""
+    content: str
+    steps: list[dict[str, Any]] = field(default_factory=list)
+    total_tokens: int = 0
+
+
+async def pipeline_conteudo(
+    topico: str,
+    run_context: RunContext,
+    model: str | None = None,
+) -> WorkflowResult:
+    """Workflow: Pesquisa -> Redacao -> Revisao."""
+    model = model or get_litellm_model()
+    result = WorkflowResult(content="")
+
+    # === PASSO 1: Pesquisa ===
+    messages = build_system_messages(
+        instructions="Voce e um pesquisador. Busque informacoes detalhadas sobre o topico.",
+        text_message=f"Pesquise sobre: {topico}",
+    )
+    pesquisa = await run_agent_loop(
+        messages=messages,
+        tools=ToolRegistry(),  # Adicionar tools de busca se necessario
+        run_context=run_context,
+        model=model,
+    )
+    result.steps.append({"name": "Pesquisa", "output": pesquisa.content})
+    result.total_tokens += pesquisa.input_tokens + pesquisa.output_tokens
+
+    # === PASSO 2: Redacao ===
+    messages = build_system_messages(
+        instructions="Voce e um redator. Escreva um artigo claro e engajante baseado na pesquisa.",
+        text_message=f"Baseado nesta pesquisa, escreva um artigo:\n\n{pesquisa.content}",
+    )
+    redacao = await run_agent_loop(
+        messages=messages,
+        tools=ToolRegistry(),
+        run_context=run_context,
+        model=model,
+    )
+    result.steps.append({"name": "Redacao", "output": redacao.content})
+    result.total_tokens += redacao.input_tokens + redacao.output_tokens
+
+    # === PASSO 3: Revisao ===
+    messages = build_system_messages(
+        instructions="Voce e um revisor. Revise o texto para clareza, gramatica e tom.",
+        text_message=f"Revise este artigo:\n\n{redacao.content}",
+    )
+    revisao = await run_agent_loop(
+        messages=messages,
+        tools=ToolRegistry(),
+        run_context=run_context,
+        model=model,
+    )
+    result.steps.append({"name": "Revisao", "output": revisao.content})
+    result.total_tokens += revisao.input_tokens + revisao.output_tokens
+
+    result.content = revisao.content
+    return result
 ```
 
----
+### 2. Workflow com Condicoes
 
-## Executor com Função Customizada
+Adicione logica condicional entre os passos:
 
 ```python
-from agno.workflow import Step, StepInput, StepOutput
-from agno.run import RunContext
+# app/workflows.py
+
+async def workflow_condicional(
+    mensagem: str,
+    run_context: RunContext,
+    model: str | None = None,
+) -> WorkflowResult:
+    """Workflow com passos condicionais."""
+    model = model or get_litellm_model()
+    result = WorkflowResult(content="")
+
+    # Verificar condicao: usuario ja foi saudado?
+    if not run_context.session_state.get("has_been_greeted"):
+        messages = build_system_messages(
+            instructions="Saude o usuario de forma calorosa e profissional.",
+            text_message=mensagem,
+        )
+        saudacao = await run_agent_loop(
+            messages=messages,
+            tools=ToolRegistry(),
+            run_context=run_context,
+            model=model,
+        )
+        run_context.session_state["has_been_greeted"] = True
+        result.steps.append({"name": "Saudacao", "output": saudacao.content})
+
+    # Passo principal (sempre executa)
+    messages = build_system_messages(
+        instructions="Voce e um assistente. Responda a pergunta do usuario.",
+        text_message=mensagem,
+    )
+    resposta = await run_agent_loop(
+        messages=messages,
+        tools=ToolRegistry(),
+        run_context=run_context,
+        model=model,
+    )
+    result.steps.append({"name": "Resposta", "output": resposta.content})
+    result.content = resposta.content
+
+    return result
+```
+
+### 3. Workflow com Passos Paralelos
+
+Use `asyncio.gather()` para executar passos independentes em paralelo:
+
+```python
+# app/workflows.py
+
+import asyncio
 
 
-def custom_content_planning(
-    step_input: StepInput, run_context: RunContext
-) -> StepOutput:
-    """Função customizada para planejamento de conteúdo."""
-    message = step_input.input
-    previous_content = step_input.previous_step_content
+async def workflow_paralelo(
+    topico: str,
+    run_context: RunContext,
+    model: str | None = None,
+) -> WorkflowResult:
+    """Workflow com passos paralelos."""
+    model = model or get_litellm_model()
 
-    # Inicializar estado se necessário
-    if "content_plans" not in run_context.session_state:
-        run_context.session_state["content_plans"] = []
-
-    if "plan_counter" not in run_context.session_state:
-        run_context.session_state["plan_counter"] = 0
-
-    # Incrementar contador
-    run_context.session_state["plan_counter"] += 1
-    plan_id = run_context.session_state["plan_counter"]
-
-    try:
-        # Lógica customizada
-        planner = Agent(name="Planejador")
-        response = planner.run(f"Crie um plano para: {message}")
-
-        # Armazenar no estado
-        plan_data = {
-            "id": plan_id,
-            "topic": message,
-            "content": response.content,
-        }
-        run_context.session_state["content_plans"].append(plan_data)
-
-        return StepOutput(content=response.content, success=True)
-
-    except Exception as e:
-        return StepOutput(
-            content=f"Erro no planejamento: {str(e)}",
-            success=False,
+    # Executar pesquisas em paralelo
+    async def pesquisar(subtopico: str):
+        messages = build_system_messages(
+            instructions="Pesquise informacoes sobre o subtopico.",
+            text_message=subtopico,
+        )
+        return await run_agent_loop(
+            messages=messages,
+            tools=ToolRegistry(),
+            run_context=run_context,
+            model=model,
         )
 
+    resultados = await asyncio.gather(
+        pesquisar(f"{topico} - aspectos tecnicos"),
+        pesquisar(f"{topico} - impacto no mercado"),
+        pesquisar(f"{topico} - tendencias futuras"),
+    )
 
-# Usar executor no passo
-passo_planejamento = Step(
-    name="Planejamento",
-    executor=custom_content_planning,
-)
+    # Combinar resultados em passo final
+    combinado = "\n\n".join(r.content for r in resultados)
+
+    messages = build_system_messages(
+        instructions="Sintetize as pesquisas em um relatorio unico e coeso.",
+        text_message=combinado,
+    )
+    final = await run_agent_loop(
+        messages=messages,
+        tools=ToolRegistry(),
+        run_context=run_context,
+        model=model,
+    )
+
+    return WorkflowResult(content=final.content)
 ```
 
 ---
 
-## Workflow com Condições
+## Resumo
 
-```python
-from agno.workflow import Workflow, Step, Condition
-
-
-def check_user_context(step_input, run_context) -> bool:
-    """Verifica se usuário tem contexto anterior."""
-    return run_context.session_state.get("has_been_greeted", False)
-
-
-workflow = Workflow(
-    name="Workflow Condicional",
-    steps=[
-        Condition(
-            name="Verificar Novo Usuário",
-            evaluator=lambda si, rc: not check_user_context(si, rc),
-            steps=[
-                Step(name="Saudar", agent=greeter_agent),
-                Step(name="Marcar Saudação", executor=mark_as_greeted),
-            ],
-        ),
-        Step(name="Processar Query", agent=main_agent),
-    ],
-    session_state={"has_been_greeted": False},
-)
-```
-
----
-
-## Workflow Misto (Agents + Teams + Executors)
-
-```python
-from agno.team import Team
-
-time_pesquisa = Team(
-    name="Time de Pesquisa",
-    members=[agent_web, agent_docs],
-)
-
-workflow = Workflow(
-    name="Pipeline Completo",
-    steps=[
-        Step(name="Pesquisa", team=time_pesquisa),
-        Step(name="Processamento", executor=processador_customizado),
-        Step(name="Revisão", agent=agente_revisor),
-    ],
-    db=SqliteDb(db_file="tmp/workflow.db"),
-)
-```
-
----
-
-## Referências
-
-- [Agno Workflows](https://docs.agno.com/basics/workflows/overview)
+| Componente | Descricao |
+|------------|-----------|
+| Workflow sequencial | Funcao async que chama `run_agent_loop()` em sequencia |
+| Passo com agente | Chamada a `run_agent_loop()` com instrucoes especificas |
+| Passo com logica | Funcao Python normal entre chamadas de `run_agent_loop()` |
+| Condicoes | `if/else` em Python antes de um passo |
+| Resultado de passo | `AgentResponse` de `app/agent_loop` |
+| Passos paralelos | `asyncio.gather()` com multiplas chamadas |

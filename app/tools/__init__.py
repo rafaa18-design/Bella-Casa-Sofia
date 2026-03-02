@@ -1,27 +1,26 @@
 """Ferramentas do agente de atendimento.
 
-Cada tool está em seu próprio arquivo dentro de app/tools/.
-Este módulo re-exporta todas as tools para manter a interface de import.
+Tools agrupadas por domínio:
+- consultas: agendar, cancelar, verificar disponibilidade
+- pacientes: buscar, histórico, verificar cliente, convênios
+- catalogo: listar serviços, calcular orçamento, obter data/hora
+- sessao: salvar dados cliente, salvar preferências, ver contexto
 
 ⚠️  IMPORTANTE: As tools deste template usam dados mockados (_mock_data.py)
 para desenvolvimento e testes. Em produção, substitua por integrações reais
 (APIs, bancos de dados, serviços externos).
 """
 
-from app.tools.agendar_consulta import agendar_consulta
-from app.tools.buscar_paciente import buscar_paciente
-from app.tools.calcular_orcamento import calcular_orcamento
-from app.tools.cancelar_consulta import cancelar_consulta
-from app.tools.consultar_convenios import consultar_convenios
-from app.tools.consultar_historico import consultar_historico_paciente
-from app.tools.formatar_contexto import formatar_contexto_state
-from app.tools.listar_servicos import listar_servicos
-from app.tools.obter_data_hora import obter_data_hora
-from app.tools.salvar_dados_cliente import salvar_dados_cliente
-from app.tools.salvar_preferencias import salvar_preferencias
-from app.tools.ver_contexto_sessao import ver_contexto_sessao
-from app.tools.verificar_cliente import verificar_cliente
-from app.tools.verificar_disponibilidade import verificar_disponibilidade
+from app.tools.catalogo import calcular_orcamento, listar_servicos, obter_data_hora
+from app.tools.consultas import agendar_consulta, cancelar_consulta, verificar_disponibilidade
+from app.tools.formatar_contexto import formatar_contexto_completo, formatar_contexto_state
+from app.tools.pacientes import (
+    buscar_paciente,
+    consultar_convenios,
+    consultar_historico_paciente,
+    verificar_cliente,
+)
+from app.tools.sessao import salvar_dados_cliente, salvar_preferencias, ver_contexto_sessao
 
 __all__ = [
     "listar_servicos",
@@ -37,5 +36,6 @@ __all__ = [
     "ver_contexto_sessao",
     "verificar_cliente",
     "formatar_contexto_state",
+    "formatar_contexto_completo",
     "obter_data_hora",
 ]

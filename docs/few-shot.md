@@ -1,210 +1,209 @@
 # Few-Shot Learning
 
-Few-shot learning permite ensinar padrões de resposta ao agente através de exemplos.
+Few-shot learning permite ensinar padroes de resposta ao agente atraves de exemplos. Ao fornecer pares de input/output de exemplo, o modelo aprende o formato, tom e estrutura esperados nas respostas.
 
 ---
 
-## Conceito
+## Abordagens Disponiveis
 
-Few-shot learning usa o parâmetro `additional_input` para fornecer exemplos de conversas que demonstram o comportamento desejado. O agente aprende padrões de resposta a partir desses exemplos.
+Few-shot examples podem ser adicionados de duas formas:
+1. **Diretamente no system prompt** via `build_system_messages()` em `app/agent.py`
+2. **No template Langfuse** via gestao de prompts
 
 ---
 
-## Exemplos com Message
+## Como Implementar
+
+### 1. Exemplos no System Prompt
+
+A forma mais direta -- inclua exemplos no system prompt:
 
 ```python
-from agno.agent import Agent
-from agno.models.message import Message
-from agno.models.openai import OpenAIChat
+# app/agent.py
 
-# Exemplos de suporte ao cliente
-support_examples = [
-    # Exemplo 1: Reset de senha
-    Message(role="user", content="Esqueci minha senha e não consigo entrar"),
-    Message(
-        role="assistant",
-        content="""
-Vou ajudá-lo a redefinir sua senha imediatamente.
+FEW_SHOT_EXAMPLES = """
+## Exemplos de Resposta
+
+### Exemplo 1: Reset de senha
+**Usuario:** Esqueci minha senha e nao consigo entrar
+**Assistente:** Vou ajuda-lo a redefinir sua senha imediatamente.
 
 **Passos para Redefinir:**
-1. Vá para a página de login e clique em "Esqueci a Senha"
+1. Va para a pagina de login e clique em "Esqueci a Senha"
 2. Digite seu email
 3. Verifique sua caixa de entrada (e spam)
-4. Clique no link de redefinição
+4. Clique no link de redefinicao
 5. Crie uma nova senha forte
 
-Se não receber o email em 5 minutos, verifique a pasta de spam.
+Se nao receber o email em 5 minutos, verifique a pasta de spam.
 Posso ajudar com mais alguma coisa?
-        """.strip(),
-    ),
 
-    # Exemplo 2: Problema de cobrança
-    Message(
-        role="user",
-        content="Fui cobrado duas vezes pelo mesmo pedido!",
-    ),
-    Message(
-        role="assistant",
-        content="""
-Peço sinceras desculpas pelo erro de cobrança.
+### Exemplo 2: Problema de cobranca
+**Usuario:** Fui cobrado duas vezes pelo mesmo pedido!
+**Assistente:** Peco sinceras desculpas pelo erro de cobranca.
 
-**Plano de Ação Imediato:**
-1. Vou investigar sua conta para confirmar a cobrança duplicada
-2. Processar reembolso completo da transação duplicada
-3. Verificar configurações de pagamento
-4. Fornecer número de confirmação do reembolso
+**Plano de Acao Imediato:**
+1. Vou investigar sua conta para confirmar a cobranca duplicada
+2. Processar reembolso completo da transacao duplicada
+3. Verificar configuracoes de pagamento
+4. Fornecer numero de confirmacao do reembolso
 
-O reembolso aparece em 3-5 dias úteis. Como desculpas, ofereço 10% de desconto no próximo pedido.
-
+O reembolso aparece em 3-5 dias uteis.
 Posso ajudar com mais alguma coisa?
-        """.strip(),
-    ),
-
-    # Exemplo 3: Problema técnico
-    Message(
-        role="user",
-        content="O app trava quando tento fazer upload de fotos",
-    ),
-    Message(
-        role="assistant",
-        content="""
-Lamento que esteja tendo problemas. Vou ajudá-lo a resolver.
-
-**Passos de Diagnóstico:**
-1. **Versão do App:** Verifique se está atualizado
-2. **Reiniciar:** Feche e reabra o aplicativo
-3. **Armazenamento:** Confirme que tem pelo menos 1GB livre
-4. **Tamanho:** Tente fotos menores (menos de 10MB)
-5. **Conexão:** Verifique sua internet
-
-**Se persistir:**
-- Tente uma foto por vez
-- Limpe o cache do app
-- Reinicie o dispositivo
-
-Se nada funcionar, me informe o modelo do dispositivo e versão do sistema.
-        """.strip(),
-    ),
-]
-
-# Criar agente com few-shot learning
-agent = Agent(
-    name="Especialista de Suporte",
-    model=OpenAIChat(id="gpt-4o"),
-    additional_input=support_examples,  # Exemplos de aprendizado
-    instructions=[
-        "Você é um especialista em suporte ao cliente.",
-        "Seja empático, profissional e focado em soluções.",
-        "Forneça passos claros e acionáveis.",
-        "Siga os padrões estabelecidos nos exemplos.",
-    ],
-    markdown=True,
-)
-
-# Testar com novos cenários
-agent.print_response("Não encontro o email de confirmação do meu pedido")
-```
-
----
-
-## Few-Shot com Structured Output
-
-```python
-from pydantic import BaseModel, Field
-from typing import List
-
-
-class AnaliseCliente(BaseModel):
-    """Schema para análise de sentimento."""
-    sentimento: str = Field(description="positivo, neutro ou negativo")
-    confianca: float = Field(ge=0, le=1, description="Confiança de 0 a 1")
-    topicos: List[str] = Field(description="Tópicos identificados")
-    acao_recomendada: str = Field(description="Próxima ação sugerida")
-
-
-# Exemplos estruturados
-exemplos = """
-Exemplos de análise:
-
-Input: "Adorei o produto! Chegou antes do prazo e a qualidade é incrível!"
-Output: {"sentimento": "positivo", "confianca": 0.95, "topicos": ["entrega", "qualidade"], "acao_recomendada": "Solicitar avaliação pública"}
-
-Input: "Péssimo atendimento, esperei 2 horas e ninguém resolveu"
-Output: {"sentimento": "negativo", "confianca": 0.92, "topicos": ["atendimento", "tempo de espera"], "acao_recomendada": "Escalar para supervisor"}
-
-Input: "O produto é ok, faz o que promete"
-Output: {"sentimento": "neutro", "confianca": 0.75, "topicos": ["produto"], "acao_recomendada": "Perguntar sobre melhorias desejadas"}
 """
 
-agent = Agent(
-    model=OpenAIChat(id="gpt-4o"),
-    output_schema=AnaliseCliente,
-    additional_input=exemplos,
-    instructions=["Analise o sentimento do cliente seguindo os padrões."],
-)
 
-response = agent.run("O serviço foi excelente, mas o preço está alto")
-print(f"Sentimento: {response.content.sentimento}")
-print(f"Confiança: {response.content.confianca}")
+def build_system_messages(
+    instructions: str,
+    text_message: str,
+    few_shot_examples: str | None = None,
+    **kwargs,
+) -> list[dict]:
+    """Build messages com few-shot examples."""
+    if few_shot_examples:
+        instructions = f"{instructions}\n\n{few_shot_examples}"
+
+    messages = [{"role": "system", "content": instructions}]
+    # ... resto da construcao
+    return messages
 ```
 
----
+### 2. Exemplos como Mensagens de Conversa
 
-## Few-Shot em Teams
+Mais eficaz para muitos modelos -- injetar exemplos como pares user/assistant:
 
 ```python
-from agno.team import Team
+# app/agent.py
 
-# Exemplos para time de suporte
-team_examples = [
-    Message(role="user", content="Não consigo acessar minha conta"),
-    Message(
-        role="assistant",
-        content="""
-**Transferindo para Especialista de Suporte:**
-- Problema de acesso à conta
-- Verificar identidade
-- Resolver bloqueio ou reset de senha
-        """.strip(),
-    ),
+FEW_SHOT_MESSAGES = [
+    {"role": "user", "content": "Esqueci minha senha e nao consigo entrar"},
+    {"role": "assistant", "content": (
+        "Vou ajuda-lo a redefinir sua senha imediatamente.\n\n"
+        "**Passos para Redefinir:**\n"
+        "1. Va para a pagina de login e clique em 'Esqueci a Senha'\n"
+        "2. Digite seu email\n"
+        "3. Verifique sua caixa de entrada (e spam)\n"
+        "4. Clique no link de redefinicao\n"
+        "5. Crie uma nova senha forte\n\n"
+        "Posso ajudar com mais alguma coisa?"
+    )},
+    {"role": "user", "content": "Fui cobrado duas vezes pelo mesmo pedido!"},
+    {"role": "assistant", "content": (
+        "Peco sinceras desculpas pelo erro de cobranca.\n\n"
+        "**Plano de Acao Imediato:**\n"
+        "1. Investigar sua conta para confirmar a cobranca duplicada\n"
+        "2. Processar reembolso completo da transacao duplicada\n"
+        "3. Verificar configuracoes de pagamento\n"
+        "4. Fornecer numero de confirmacao do reembolso\n\n"
+        "O reembolso aparece em 3-5 dias uteis."
+    )},
 ]
 
-support_agent = Agent(
-    name="Especialista de Suporte",
-    role="Resolver problemas de acesso",
-)
 
-escalation_agent = Agent(
-    name="Gerente de Escalação",
-    role="Tratar casos complexos",
-)
+def build_system_messages(
+    instructions: str,
+    text_message: str,
+    few_shot: list[dict] | None = None,
+    images: list[dict] | None = None,
+    history: list[dict] | None = None,
+) -> list[dict]:
+    messages = [{"role": "system", "content": instructions}]
 
-team = Team(
-    name="Time de Suporte",
-    members=[support_agent, escalation_agent],
-    model=OpenAIChat(id="gpt-4o"),
-    additional_input=team_examples,
-    instructions=[
-        "Coordene o suporte com excelência.",
-        "Siga os padrões estabelecidos.",
-    ],
-)
+    # Injetar exemplos few-shot (antes do historico real)
+    if few_shot:
+        messages.extend(few_shot)
+
+    # Historico da conversa
+    if history:
+        for msg in history:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if content and role in ("user", "assistant"):
+                messages.append({"role": role, "content": content})
+
+    # Mensagem atual do usuario
+    messages.append({"role": "user", "content": text_message})
+
+    return messages
+```
+
+### 3. Few-Shot no Template Langfuse
+
+Adicione exemplos diretamente no prompt template gerenciado pelo Langfuse:
+
+```
+Voce e um especialista em suporte ao cliente.
+Seja empatico, profissional e focado em solucoes.
+
+## Exemplos de Resposta
+
+### Problema de acesso
+**Usuario:** Nao consigo acessar minha conta
+**Resposta esperada:**
+1. Verificar identidade do usuario
+2. Diagnosticar tipo de bloqueio
+3. Resolver com passos claros
+4. Confirmar resolucao
+
+### Reclamacao
+**Usuario:** Estou insatisfeito com o servico
+**Resposta esperada:**
+1. Pedir desculpas genuinamente
+2. Entender o problema especifico
+3. Propor solucao concreta
+4. Oferecer compensacao se aplicavel
+
+Siga estes padroes ao responder.
+{{context}}
+```
+
+O template e gerenciado via `app/prompt_manager.py` e atualizado pelo webhook `/prompts/webhook`.
+
+### 4. Few-Shot com Structured Output
+
+Para respostas estruturadas, inclua exemplos do formato esperado:
+
+```python
+# Exemplos no system prompt ou Langfuse template
+
+STRUCTURED_FEW_SHOT = """
+## Formato de Resposta
+
+Sempre responda no seguinte formato JSON:
+
+Exemplo 1:
+Input: "Adorei o produto! Chegou antes do prazo."
+Output: {"sentimento": "positivo", "confianca": 0.95, "topicos": ["entrega", "qualidade"]}
+
+Exemplo 2:
+Input: "Pessimo atendimento, esperei 2 horas"
+Output: {"sentimento": "negativo", "confianca": 0.92, "topicos": ["atendimento", "tempo"]}
+
+Exemplo 3:
+Input: "O produto e ok, faz o que promete"
+Output: {"sentimento": "neutro", "confianca": 0.75, "topicos": ["produto"]}
+"""
 ```
 
 ---
 
-## Boas Práticas
+## Boas Praticas
 
-| Prática | Descrição |
+| Pratica | Descricao |
 |---------|-----------|
 | **3-5 exemplos** | Quantidade ideal para a maioria dos casos |
-| **Exemplos diversos** | Cubra diferentes cenários |
-| **Formato consistente** | Mantenha estrutura similar nos exemplos |
-| **Exemplos realistas** | Use casos reais ou muito próximos |
-| **Atualize regularmente** | Melhore exemplos com base em feedback |
+| **Exemplos diversos** | Cubra diferentes cenarios e edge cases |
+| **Formato consistente** | Mantenha estrutura similar em todos os exemplos |
+| **Exemplos realistas** | Use casos reais ou muito proximos da realidade |
+| **Mensagens user/assistant** | Mais eficaz que exemplos no system prompt para muitos modelos |
 
 ---
 
-## Referências
+## Resumo
 
-- [Agno Context](https://docs.agno.com/basics/context/agent/overview)
+| Funcionalidade | Como Implementar |
+|----------------|------------------|
+| Exemplos de conversa | Lista de dicts `{"role": ..., "content": ...}` em `build_system_messages()` |
+| Mensagem de exemplo | `{"role": "user", "content": ...}` (formato LiteLLM) |
+| Few-shot em multi-agent | Injetar exemplos no system prompt de cada agente individualmente |
+| Atualizacao de exemplos | Gerenciar via template Langfuse (`/prompts/webhook`) |

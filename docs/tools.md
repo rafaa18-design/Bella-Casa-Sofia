@@ -1,19 +1,19 @@
 # Tools (Ferramentas)
 
-Este documento cobre a criação de ferramentas, saída estruturada e tratamento de erros usando as exceptions do Agno.
+Este documento cobre a criacao de ferramentas, o decorator `@tool`, o `ToolRegistry`, acesso ao estado da sessao e tratamento de erros usando as exceptions do runtime customizado (`app/runtime.py`).
 
 ---
 
 ## Estrutura de Arquivos
 
-Cada tool deve ficar em seu próprio arquivo dentro de `app/tools/`. O `__init__.py` re-exporta todas as tools.
+Cada tool deve ficar em seu proprio arquivo dentro de `app/tools/`. O `__init__.py` re-exporta todas as tools.
 
 ```
 app/tools/
 ├── __init__.py              # Re-exports de todas as tools + __all__
 ├── _mock_data.py            # Dados mockados compartilhados (APENAS para desenvolvimento)
-├── _helpers.py              # Funções auxiliares (ensure_state, etc.)
-├── formatar_contexto.py     # Helper para injeção de contexto (não é tool)
+├── _helpers.py              # Funcoes auxiliares (ensure_state, etc.)
+├── formatar_contexto.py     # Helper para injecao de contexto (nao e tool)
 ├── listar_servicos.py       # Uma tool por arquivo
 ├── verificar_disponibilidade.py
 ├── agendar_consulta.py
@@ -24,46 +24,55 @@ app/tools/
 ├── calcular_orcamento.py
 ├── salvar_dados_cliente.py
 ├── salvar_preferencias.py
-└── ver_contexto_sessao.py
+├── ver_contexto_sessao.py
+└── obter_data_hora.py
 ```
 
-> **⚠️ Dados Mockados são APENAS para Desenvolvimento**
+> **Dados Mockados sao APENAS para Desenvolvimento**
 >
-> O arquivo `_mock_data.py` contém dados fictícios para permitir testes do pipeline
-> completo (auth, metrics, tracing, state, etc.) sem dependências externas.
-> **Em produção, cada tool deve consultar APIs reais, bancos de dados ou serviços externos.**
+> O arquivo `_mock_data.py` contem dados ficticios para permitir testes do pipeline
+> completo (auth, metrics, tracing, state, etc.) sem dependencias externas.
+> **Em producao, cada tool deve consultar APIs reais, bancos de dados ou servicos externos.**
 > Remova `_mock_data.py` e atualize cada tool para usar a fonte de dados real,
 > mantendo a mesma interface (assinatura e retorno).
 
-### Criando uma Nova Tool
+---
+
+## Criando uma Nova Tool
 
 1. Crie um arquivo em `app/tools/minha_tool.py`:
 
 ```python
 # app/tools/minha_tool.py
-"""Tool: minha_tool — Descrição breve."""
+"""Tool: minha_tool -- Descricao breve."""
 
-from agno.tools import tool
-from agno.exceptions import RetryAgentRun
+from app.runtime import tool, RetryAgentRun
 
 
 @tool
 def minha_tool(parametro: str) -> str:
-    """Descrição da ferramenta para o LLM.
+    """Descricao da ferramenta para o LLM.
 
     O LLM usa esta docstring para decidir quando chamar a tool.
     Seja claro sobre quando e como usar.
 
     Args:
-        parametro: Descrição do parâmetro.
+        parametro: Descricao do parametro.
 
     Returns:
         Resultado formatado.
     """
     if not parametro:
-        raise RetryAgentRun("Parâmetro obrigatório. Informe o valor.")
+        raise RetryAgentRun("Parametro obrigatorio. Informe o valor.")
     return f"Resultado: {parametro}"
 ```
+
+O decorator `@tool` converte a funcao em um `ToolDefinition`, extraindo:
+
+- **Nome**: `func.__name__`
+- **Descricao**: Primeira linha da docstring
+- **Parametros**: JSON Schema gerado a partir da assinatura (type hints)
+- O parametro `run_context` (se presente) e filtrado do schema automaticamente
 
 2. Registre no `app/tools/__init__.py`:
 
@@ -76,43 +85,145 @@ __all__ = [
 ]
 ```
 
-3. Adicione à lista de tools em `app/agent.py`:
+3. Adicione a lista de tools em `app/agent.py`, dentro de `get_tools_registry()`:
 
 ```python
 from app.tools import minha_tool
 
-def create_agent(...) -> Agent:
-    return Agent(
-        tools=[
-            # ... tools existentes
-            minha_tool,
-        ],
-    )
+def get_tools_registry() -> ToolRegistry:
+    registry = ToolRegistry()
+
+    all_tools = [
+        # ... tools existentes
+        minha_tool,
+    ]
+
+    for tool_def in all_tools:
+        registry.register(tool_def)
+
+    return registry
 ```
 
-### Tool com Acesso ao Session State
+---
 
-Se a tool precisa ler/escrever dados na sessão:
+## Decorator @tool
+
+O decorator `@tool` esta definido em `app/runtime.py`. Ele converte uma funcao Python em um `ToolDefinition` compativel com o formato OpenAI de tool calling.
+
+### Como Funciona
 
 ```python
-# app/tools/salvar_nota.py
-"""Tool: salvar_nota — Salva anotação na sessão."""
+from app.runtime import tool
 
-from agno.run import RunContext
-from agno.tools import tool
+@tool
+def buscar_clima(cidade: str) -> str:
+    """Busca o clima atual de uma cidade.
 
+    Args:
+        cidade: Nome da cidade.
+    """
+    return f"O clima em {cidade} esta ensolarado, 25C."
+```
+
+O decorator gera automaticamente o seguinte JSON Schema para o LLM:
+
+```json
+{
+    "type": "function",
+    "function": {
+        "name": "buscar_clima",
+        "description": "Busca o clima atual de uma cidade.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "cidade": {"type": "string"}
+            },
+            "required": ["cidade"]
+        }
+    }
+}
+```
+
+### ToolDefinition
+
+O resultado do decorator e um `ToolDefinition` (dataclass):
+
+```python
+@dataclass
+class ToolDefinition:
+    name: str                    # Nome da funcao
+    description: str             # Primeira linha da docstring
+    parameters: dict[str, Any]   # JSON Schema dos parametros
+    func: Callable               # Referencia a funcao original
+```
+
+### Mapeamento de Tipos
+
+O decorator converte type hints Python para tipos JSON Schema:
+
+| Python    | JSON Schema |
+|-----------|-------------|
+| `str`     | `string`    |
+| `int`     | `integer`   |
+| `float`   | `number`    |
+| `bool`    | `boolean`   |
+| `list`    | `array`     |
+| `dict`    | `object`    |
+
+Parametros sem valor default sao marcados como `required`. Parametros com valor default incluem o default no schema.
+
+---
+
+## ToolRegistry
+
+O `ToolRegistry` em `app/runtime.py` gerencia o registro e a execucao das tools. Ele e configurado em `app/agent.py:get_tools_registry()`.
+
+### Interface
+
+```python
+class ToolRegistry:
+    def register(self, tool_def: ToolDefinition) -> None:
+        """Registra uma ToolDefinition."""
+
+    def get_definitions(self) -> list[dict[str, Any]]:
+        """Retorna definicoes no formato OpenAI para litellm."""
+
+    async def execute(
+        self,
+        name: str,
+        args: dict[str, Any],
+        run_context: RunContext,
+    ) -> str:
+        """Executa uma tool pelo nome, injetando RunContext se necessario."""
+```
+
+### Comportamento da Execucao
+
+- O `ToolRegistry.execute()` verifica se a funcao possui o parametro `run_context` na assinatura e, se sim, injeta-o automaticamente
+- Suporta funcoes sincronas e assincronas
+- Propaga `RetryAgentRun` e `StopAgentRun` para o agent loop
+- Qualquer outra excecao e capturada e retornada como string de erro
+
+---
+
+## Acessando RunContext
+
+O `RunContext` (definido em `app/runtime.py`) fornece acesso ao estado da sessao. Para usa-lo, basta declarar `run_context: RunContext` como primeiro parametro da tool -- ele sera injetado automaticamente pelo `ToolRegistry` e **nao aparece** no schema enviado ao LLM.
+
+```python
+from app.runtime import tool, RunContext
 from app.tools._helpers import ensure_state
 
 
 @tool
 def salvar_nota(run_context: RunContext, nota: str) -> str:
-    """Salva uma anotação na sessão atual.
+    """Salva uma anotacao na sessao atual.
 
     Args:
-        nota: Texto da anotação.
+        nota: Texto da anotacao.
 
     Returns:
-        Confirmação.
+        Confirmacao.
     """
     state = ensure_state(run_context)
     if "notas" not in state:
@@ -121,368 +232,250 @@ def salvar_nota(run_context: RunContext, nota: str) -> str:
     return f"Nota salva: {nota}"
 ```
 
-### Helpers e Dados Compartilhados
-
-- **`_helpers.py`**: Funções auxiliares usadas por múltiplas tools (ex: `ensure_state`, geradores de ID)
-- **`_mock_data.py`**: Dados de desenvolvimento. Em produção, remova e substitua por dados reais
-- **`formatar_contexto.py`**: Formatação de state para injeção no prompt (usado por `main.py`, não é tool)
-
----
-
-## Decorator @tool
-
-Use o decorator para opções avançadas:
+### Atributos do RunContext
 
 ```python
-from agno.tools import tool
-
-@tool(stop_after_tool_call=True)  # Para execução após chamar
-def buscar_clima(cidade: str) -> str:
-    """Busca o clima atual de uma cidade.
-
-    Args:
-        cidade (str): Nome da cidade.
-    """
-    return f"O clima em {cidade} está ensolarado, 25°C."
+@dataclass
+class RunContext:
+    session_state: dict[str, Any]   # Estado da sessao (leitura/escrita)
+    session_id: str | None          # ID da sessao atual
+    user_id: str | None             # ID do usuario
 ```
 
----
-
-## Acessando RunContext
-
-Para acessar estado da sessão e dependências:
+### Exemplo Completo com Estado
 
 ```python
-from agno.run import RunContext
+from app.runtime import tool, RunContext
+from app.tools._helpers import ensure_state
 
+
+@tool
 def adicionar_item(run_context: RunContext, item: str) -> str:
-    """Adiciona item à lista de compras.
+    """Adiciona item a lista de compras.
 
     Args:
-        item (str): Item para adicionar.
+        item: Item para adicionar.
     """
-    if "lista" not in run_context.session_state:
-        run_context.session_state["lista"] = []
+    state = ensure_state(run_context)
 
-    run_context.session_state["lista"].append(item)
-    return f"'{item}' adicionado. Lista: {run_context.session_state['lista']}"
+    if "lista" not in state:
+        state["lista"] = []
 
-
-def obter_perfil_usuario(run_context: RunContext) -> str:
-    """Obtém o perfil do usuário atual."""
-    user_id = run_context.user_id
-    profiles = run_context.dependencies.get("user_profiles", {})
-    return profiles.get(user_id, "Perfil não encontrado")
+    state["lista"].append(item)
+    return f"'{item}' adicionado. Lista: {state['lista']}"
 ```
 
 ---
 
-## Toolkits Pré-construídos
+## Helpers e Dados Compartilhados
+
+- **`_helpers.py`**: Funcoes auxiliares usadas por multiplas tools (ex: `ensure_state`, geradores de ID)
+- **`_mock_data.py`**: Dados de desenvolvimento. Em producao, remova e substitua por dados reais
+- **`formatar_contexto.py`**: Formatacao de state para injecao no prompt (usado por `main.py`, nao e tool)
+
+A funcao `ensure_state` e um padrao comum para garantir que o `session_state` existe:
 
 ```python
-from agno.tools.duckduckgo import DuckDuckGoTools
-from agno.tools.yfinance import YFinanceTools
-from agno.tools.newspaper4k import Newspaper4kTools
+from app.runtime import RunContext
 
-agent = Agent(
-    tools=[
-        DuckDuckGoTools(),      # Busca web
-        YFinanceTools(),        # Dados financeiros
-        Newspaper4kTools(),     # Extração de artigos
-    ],
-)
+
+def ensure_state(run_context: RunContext) -> dict:
+    """Garante que o session_state existe e retorna."""
+    if not run_context.session_state:
+        run_context.session_state = {}
+    return run_context.session_state
 ```
 
 ---
 
-## Structured Output (Saída Estruturada)
+## Truncamento de Saida
 
-### Definindo Schema com Pydantic
+O resultado de cada tool e truncado antes de ser enviado de volta ao LLM. Isso previne que saidas muito longas estourem a janela de contexto.
 
-```python
-from pydantic import BaseModel, Field
-from typing import List
+- O limite padrao e definido por `TOOL_OUTPUT_MAX_CHARS` no `app/config.py` (default: **500** caracteres)
+- Saidas que excedem o limite sao cortadas com um indicador: `... [truncated, N total chars]`
 
-class AnaliseCliente(BaseModel):
-    """Schema para análise de cliente."""
-
-    nome: str = Field(..., description="Nome do cliente")
-    sentimento: str = Field(
-        ...,
-        description="Sentimento: positivo, neutro ou negativo"
-    )
-    problemas: List[str] = Field(
-        default_factory=list,
-        description="Lista de problemas identificados"
-    )
-    prioridade: int = Field(
-        ...,
-        ge=1,
-        le=5,
-        description="Prioridade de 1 (baixa) a 5 (alta)"
-    )
-```
-
-### Usando no Agente
-
-```python
-from agno.agent import Agent, RunOutput
-from agno.models.openai import OpenAIChat
-
-agent = Agent(
-    model=OpenAIChat(id="gpt-4o"),
-    description="Você analisa interações com clientes.",
-    output_schema=AnaliseCliente,
-)
-
-response: RunOutput = agent.run("Cliente reclamou do atraso...")
-analise = response.content  # Tipo: AnaliseCliente
-print(f"Sentimento: {analise.sentimento}")
-```
-
-### JSON Mode vs Structured Output
-
-```python
-from agno.agent import Agent
-from agno.models.openai import OpenAIChat
-
-# JSON Mode (mais flexível, menos garantido)
-agent_json = Agent(
-    model=OpenAIChat(id="gpt-4o"),
-    output_schema=AnaliseCliente,
-    use_json_mode=True,  # Usa JSON mode
-)
-
-# Structured Output (mais estrito, garantido)
-agent_strict = Agent(
-    model=OpenAIChat(id="gpt-4o"),
-    output_schema=AnaliseCliente,
-    # strict_output=True é o padrão
-)
-
-# Guided Output (menos estrito)
-agent_guided = Agent(
-    model=OpenAIChat(id="gpt-4o", strict_output=False),
-    output_schema=AnaliseCliente,
-)
-```
-
-| Modo | Descrição | Quando Usar |
-|------|-----------|-------------|
-| **Structured Output** | Schema estrito, garantido | Produção, dados críticos |
-| **JSON Mode** | Mais flexível | Prototipagem, dados variáveis |
-| **Guided Output** | Menos restrito | Quando schema é sugestão |
+Tenha isso em mente ao projetar o retorno das suas tools. Prefira retornar informacao concisa e relevante.
 
 ---
 
-## Error Handling com Agno Exceptions
+## Error Handling com Exceptions
 
-O Agno fornece duas exceptions para controlar o fluxo:
+O runtime customizado fornece duas exceptions para controlar o fluxo do agent loop. Ambas sao importadas de `app.runtime`.
 
-| Exception | Comportamento | Quando Usar |
-|-----------|---------------|-------------|
-| `RetryAgentRun` | Envia feedback ao modelo, continua execução | Validação, requisitos não atendidos |
-| `StopAgentRun` | Para o loop de tool calls, finaliza run | Condição crítica atingida |
+| Exception        | Comportamento                                   | Quando Usar                        |
+|------------------|--------------------------------------------------|------------------------------------|
+| `RetryAgentRun`  | Envia feedback ao modelo, continua execucao      | Validacao, requisitos nao atendidos |
+| `StopAgentRun`   | Para o loop de tool calls, finaliza a execucao   | Condicao critica atingida           |
 
 ### RetryAgentRun
 
-Permite fornecer feedback ao modelo para ajustar comportamento:
+Permite fornecer feedback ao LLM para que ele ajuste a chamada ou o comportamento. A mensagem e enviada como resultado da tool (prefixada com `Error: `), e o loop continua normalmente.
 
 ```python
-from agno.exceptions import RetryAgentRun
-from agno.run import RunContext
+from app.runtime import tool, RetryAgentRun, RunContext
+from app.tools._helpers import ensure_state
 
+
+@tool
 def add_item(run_context: RunContext, item: str) -> str:
-    """Adiciona item à lista de compras."""
-    if not run_context.session_state:
-        run_context.session_state = {}
+    """Adiciona item a lista de compras."""
+    state = ensure_state(run_context)
 
-    if "shopping_list" not in run_context.session_state:
-        run_context.session_state["shopping_list"] = []
+    if "shopping_list" not in state:
+        state["shopping_list"] = []
 
-    run_context.session_state["shopping_list"].append(item)
-    len_shopping_list = len(run_context.session_state["shopping_list"])
+    state["shopping_list"].append(item)
+    total = len(state["shopping_list"])
 
-    if len_shopping_list < 3:
+    if total < 3:
         raise RetryAgentRun(
-            f"Shopping list is: {run_context.session_state['shopping_list']}. "
-            f"Minimum 3 items. Add {3 - len_shopping_list} more.",
+            f"Shopping list: {state['shopping_list']}. "
+            f"Minimo 3 itens. Adicione mais {3 - total}."
         )
 
-    return f"Shopping list: {run_context.session_state.get('shopping_list')}"
+    return f"Lista de compras: {state['shopping_list']}"
 ```
 
 ### Casos de Uso do RetryAgentRun
 
 ```python
-# Validação de Input
-def processar_email(run_context: RunContext, email: str) -> str:
+from app.runtime import tool, RetryAgentRun, RunContext
+from app.tools._helpers import ensure_state
+
+
+# Validacao de Input
+@tool
+def processar_email(email: str) -> str:
+    """Processa um email."""
     if "@" not in email:
-        raise RetryAgentRun(
-            exc="Invalid email format. Use user@domain.com",
-            user_message="Por favor, forneça um email válido.",
-        )
+        raise RetryAgentRun("Formato de email invalido. Use usuario@dominio.com")
     return f"Email {email} processado"
 
 
 # Requisitos de Estado
+@tool
 def finalizar_pedido(run_context: RunContext) -> str:
-    carrinho = run_context.session_state.get("carrinho", [])
+    """Finaliza o pedido do carrinho."""
+    state = ensure_state(run_context)
+    carrinho = state.get("carrinho", [])
     if not carrinho:
-        raise RetryAgentRun(
-            exc="Cart is empty. Add items first.",
-            agent_message="Attempting to add items to cart first.",
-        )
+        raise RetryAgentRun("Carrinho vazio. Adicione itens antes de finalizar.")
     return f"Pedido finalizado: {carrinho}"
 
 
-# Lógica de Negócio
-def aprovar_desconto(run_context: RunContext, percentual: int) -> str:
+# Logica de Negocio
+@tool
+def aprovar_desconto(percentual: int) -> str:
+    """Aprova um desconto percentual."""
     if percentual > 20:
         raise RetryAgentRun(
-            exc=f"Discount {percentual}% exceeds 20% limit.",
+            f"Desconto de {percentual}% excede o limite de 20%."
         )
     return f"Desconto de {percentual}% aprovado"
 ```
 
 ### StopAgentRun
 
-Para o loop de tool calls imediatamente:
+Para o loop de tool calls imediatamente. A mensagem e usada como conteudo final da resposta.
 
 ```python
-from agno.exceptions import StopAgentRun
-from agno.run import RunContext
+from app.runtime import tool, StopAgentRun
 
-def check_condition(run_context: RunContext, value: int) -> str:
-    """Verifica uma condição e para se atingida."""
-    if value > 100:
+
+@tool
+def verificar_limite(valor: int) -> str:
+    """Verifica se um valor esta dentro do limite."""
+    if valor > 100:
         raise StopAgentRun(
-            f"Value {value} exceeds threshold. Stopping execution."
+            f"Valor {valor} excede o limite. Execucao interrompida."
         )
-    return f"Value {value} is acceptable."
+    return f"Valor {valor} esta dentro do limite."
 ```
 
-### Fluxo de Execução
+### Fluxo de Execucao no Agent Loop
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      Agent Run                               │
-├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐     │
-│  │  LLM Call   │───▶│  Tool Call  │───▶│   Result    │     │
-│  └─────────────┘    └─────────────┘    └─────────────┘     │
-│         │                  │                  │             │
-│         │                  ▼                  │             │
-│         │         ┌───────────────┐           │             │
-│         │         │ RetryAgentRun │───────────┘             │
-│         │         │   (feedback)  │     (continua loop)     │
-│         │         └───────────────┘                         │
-│         │                  │                                 │
-│         │                  ▼                                 │
-│         │         ┌───────────────┐                         │
-│         │         │ StopAgentRun  │──────▶ Run COMPLETED    │
-│         │         │    (exit)     │                         │
-│         │         └───────────────┘                         │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                        Agent Loop                                │
+│                    (app/agent_loop.py)                            │
+├──────────────────────────────────────────────────────────────────┤
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐       │
+│  │litellm.acom- │───>│  ToolRegistry│───>│   Resultado  │       │
+│  │  pletion()   │    │  .execute()  │    │   (string)   │       │
+│  └──────────────┘    └──────────────┘    └──────────────┘       │
+│         │                   │                   │                │
+│         │                   v                   │                │
+│         │          ┌────────────────┐            │                │
+│         │          │ RetryAgentRun  │────────────┘                │
+│         │          │  (feedback p/  │     (resultado vai como    │
+│         │          │   o LLM)      │      tool result, loop     │
+│         │          └────────────────┘      continua)             │
+│         │                   │                                    │
+│         │                   v                                    │
+│         │          ┌────────────────┐                            │
+│         │          │ StopAgentRun   │───────> Loop FINALIZADO    │
+│         │          │ (para o loop)  │                            │
+│         │          └────────────────┘                            │
+│         │                                                        │
+│         │          ┌────────────────┐                            │
+│         │          │ Truncamento    │   TOOL_OUTPUT_MAX_CHARS    │
+│         │          │ da saida       │   (default: 500 chars)    │
+│         │          └────────────────┘                            │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ### Quando Usar Cada Exception
 
-| Cenário | Exception | Exemplo |
-|---------|-----------|---------|
-| Validação falhou | `RetryAgentRun` | Email inválido |
-| Pré-requisito não atendido | `RetryAgentRun` | Carrinho vazio |
-| Refinamento iterativo | `RetryAgentRun` | Precisa mais dados |
-| Limite crítico atingido | `StopAgentRun` | Valor excede threshold |
-| Condição de parada | `StopAgentRun` | Objetivo alcançado |
-| Erro irrecuperável | `StopAgentRun` | Permissão negada |
+| Cenario                    | Exception        | Exemplo                    |
+|----------------------------|------------------|----------------------------|
+| Validacao falhou           | `RetryAgentRun`  | Email invalido             |
+| Pre-requisito nao atendido | `RetryAgentRun`  | Carrinho vazio             |
+| Refinamento iterativo      | `RetryAgentRun`  | Precisa de mais dados      |
+| Limite critico atingido    | `StopAgentRun`   | Valor excede threshold     |
+| Condicao de parada         | `StopAgentRun`   | Objetivo alcancado         |
+| Erro irrecuperavel         | `StopAgentRun`   | Permissao negada           |
 
 ---
 
-## Pre-hooks e Post-hooks
+## Boas Praticas para Tools
+
+| Pratica                | Descricao                                                        |
+|------------------------|------------------------------------------------------------------|
+| **Docstring completa** | O LLM usa a primeira linha para decidir quando usar a tool       |
+| **Type hints**         | Obrigatorios -- definem o JSON Schema de parametros              |
+| **Retorne strings**    | O resultado e sempre convertido para `str` pelo `ToolRegistry`   |
+| **Trate erros**        | Use `RetryAgentRun` para feedback, `StopAgentRun` para parar    |
+| **Valide inputs**      | Sempre validar antes de processar                                |
+| **Saida concisa**      | Lembre que a saida e truncada em 500 chars por padrao            |
+| **Um arquivo por tool**| Mantenha cada tool em seu proprio arquivo em `app/tools/`        |
+| **Sem efeitos colaterais no schema** | O parametro `run_context` e filtrado automaticamente |
+
+---
+
+## Resumo dos Imports
+
+Todos os imports necessarios para criar tools vem de `app.runtime`:
 
 ```python
-from agno.tools import FunctionCall, tool
-from agno.exceptions import RetryAgentRun
-
-def pre_hook(fc: FunctionCall):
-    """Pre-hook executado antes da tool."""
-    print(f"Calling: {fc.function.name}")
-    print(f"Args: {fc.arguments}")
-
-    # Pode forçar retry
-    if some_condition:
-        raise RetryAgentRun("Please try again")
-
-
-def post_hook(fc: FunctionCall):
-    """Post-hook executado após a tool."""
-    print(f"Result: {fc.result}")
-
-
-@tool(pre_hook=pre_hook, post_hook=post_hook)
-def minha_tool(arg: str) -> str:
-    """Tool com hooks."""
-    return f"Resultado: {arg}"
+from app.runtime import tool              # Decorator que gera ToolDefinition
+from app.runtime import RunContext        # Contexto da sessao (session_state, user_id, etc.)
+from app.runtime import RetryAgentRun     # Feedback para o LLM tentar novamente
+from app.runtime import StopAgentRun      # Para o agent loop imediatamente
 ```
 
-### Tool Hooks no Agente
+Helpers opcionais:
 
 ```python
-import time
-from typing import Any, Callable, Dict
-
-from agno.agent import Agent
-from agno.tools.duckduckgo import DuckDuckGoTools
-from agno.utils.log import logger
-
-
-def logger_hook(
-    function_name: str,
-    function_call: Callable,
-    arguments: Dict[str, Any]
-):
-    """
-    Hook que envolve toda execução de tool.
-    Útil para logging, métricas, e observabilidade.
-    """
-    # Detectar delegação em times
-    if function_name == "delegate_task_to_member":
-        member_id = arguments.get("member_id")
-        logger.info(f"Delegando tarefa para: {member_id}")
-
-    # Medir tempo de execução
-    start_time = time.time()
-    result = function_call(**arguments)  # Executa a tool
-    duration = time.time() - start_time
-
-    logger.info(f"Tool {function_name} executou em {duration:.2f}s")
-    return result
-
-
-# Aplicar hook a todas as tools do agente
-agent = Agent(
-    tools=[DuckDuckGoTools()],
-    tool_hooks=[logger_hook],  # Lista de hooks
-    markdown=True,
-)
+from app.tools._helpers import ensure_state   # Garante que session_state existe
 ```
 
 ---
 
-## Boas Práticas para Tools
+## Referencias
 
-| Prática | Descrição |
-|---------|-----------|
-| **Docstring completa** | O LLM usa para entender quando usar a tool |
-| **Type hints** | Obrigatórios - definem schema de parâmetros |
-| **Retorne strings** | Mais fácil para o LLM processar |
-| **Trate erros** | Use `RetryAgentRun` para feedback, `StopAgentRun` para parar |
-| **Valide inputs** | Sempre validar antes de processar |
-
----
-
-## Referências
-
-- [Agno Tools Documentation](https://docs.agno.com/tools/overview)
-- [Agno Exceptions](https://docs.agno.com/tools/exceptions)
+- [`app/runtime.py`](../app/runtime.py) -- Decorator `@tool`, `ToolDefinition`, `ToolRegistry`, `RunContext`, exceptions
+- [`app/agent.py`](../app/agent.py) -- `get_tools_registry()` e registro das tools
+- [`app/agent_loop.py`](../app/agent_loop.py) -- Agent loop iterativo com `litellm.acompletion()`
+- [`app/tools/__init__.py`](../app/tools/__init__.py) -- Re-exports de todas as tools
+- [`app/config.py`](../app/config.py) -- `TOOL_OUTPUT_MAX_CHARS` e demais configuracoes

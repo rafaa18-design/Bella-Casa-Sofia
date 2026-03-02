@@ -13,7 +13,7 @@ import time
 from typing import Any
 
 from app.config import settings
-from app.langfuse_client import get_langfuse
+from app.observability import get_langfuse
 from app.storage import get_redis
 
 logger = logging.getLogger(__name__)

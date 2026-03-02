@@ -1,284 +1,217 @@
 # Knowledge Bases e RAG
 
-O Agno suporta RAG (Retrieval-Augmented Generation) com múltiplos backends de banco de dados vetorial.
+RAG (Retrieval-Augmented Generation) permite que o agente consulte bases de conhecimento externas para responder perguntas com informacoes atualizadas e especificas do dominio. O agente busca documentos relevantes em um banco vetorial e usa o conteudo como contexto.
 
 ---
 
-## Conceitos Fundamentais
+## Abordagem
 
-| Conceito | Descrição |
-|----------|-----------|
-| **Knowledge** | Container para documentos e embeddings |
-| **VectorDB** | Backend de armazenamento (PgVector, LanceDb, etc.) |
-| **Embedder** | Modelo para gerar embeddings |
-| **SearchType** | Tipo de busca (vector, hybrid, keyword) |
-| **Reranker** | Re-ordenação de resultados para maior precisão |
+RAG e implementado como uma **tool que consulta um banco de dados vetorial** (pgvector, Pinecone, ChromaDB, etc.) e retorna contexto relevante para o agente.
 
 ---
 
-## Agentic RAG vs Traditional RAG
+## Como Implementar
+
+### 1. RAG como Tool (Agentic RAG)
+
+O agente decide quando buscar no knowledge base -- esta e a abordagem recomendada:
 
 ```python
-# === AGENTIC RAG (Recomendado) ===
-# O agente decide quando buscar no knowledge base
-agent = Agent(
-    knowledge=knowledge,
-    search_knowledge=True,  # Habilita tool de busca
-)
+# app/tools/knowledge.py
 
-# === TRADITIONAL RAG ===
-# Contexto sempre adicionado ao prompt
-agent = Agent(
-    knowledge=knowledge,
-    add_knowledge_to_context=True,
-    search_knowledge=False,
-)
+"""Tool: buscar_conhecimento -- Busca na base de conhecimento vetorial."""
+
+from app.runtime import tool
+
+
+@tool
+def buscar_conhecimento(query: str, top_k: int = 5) -> str:
+    """Busca informacoes relevantes na base de conhecimento.
+
+    Use esta ferramenta quando precisar de informacoes especificas
+    sobre documentos, politicas ou procedimentos da empresa.
+
+    Args:
+        query: Pergunta ou termo de busca.
+        top_k: Numero maximo de resultados.
+    """
+    # Exemplo com pgvector (PostgreSQL)
+    import asyncio
+    results = asyncio.get_event_loop().run_until_complete(
+        _buscar_pgvector(query, top_k)
+    )
+    if not results:
+        return "Nenhum documento relevante encontrado."
+
+    formatted = []
+    for i, doc in enumerate(results, 1):
+        formatted.append(f"[{i}] {doc['content'][:500]}")
+
+    return "\n\n".join(formatted)
+
+
+async def _buscar_pgvector(query: str, top_k: int) -> list[dict]:
+    """Busca vetorial usando pgvector."""
+    import asyncpg
+    import openai
+
+    # Gerar embedding da query
+    client = openai.AsyncOpenAI()
+    embedding_response = await client.embeddings.create(
+        input=query,
+        model="text-embedding-3-small",
+    )
+    query_embedding = embedding_response.data[0].embedding
+
+    # Buscar no pgvector
+    conn = await asyncpg.connect("postgresql://user:pass@localhost/db")
+    rows = await conn.fetch(
+        """
+        SELECT content, metadata,
+               1 - (embedding <=> $1::vector) AS similarity
+        FROM documents
+        ORDER BY embedding <=> $1::vector
+        LIMIT $2
+        """,
+        str(query_embedding),
+        top_k,
+    )
+    await conn.close()
+
+    return [{"content": r["content"], "similarity": r["similarity"]} for r in rows]
 ```
 
----
+### 2. RAG Tradicional (Contexto no Prompt)
 
-## Configuração com PgVector (PostgreSQL)
+Alternativa: sempre injetar contexto relevante no system prompt:
 
 ```python
-from agno.agent import Agent
-from agno.knowledge.embedder.openai import OpenAIEmbedder
-from agno.knowledge.knowledge import Knowledge
-from agno.models.openai import OpenAIChat
-from agno.vectordb.pgvector import PgVector, SearchType
+# app/agent.py
 
-knowledge = Knowledge(
-    vector_db=PgVector(
-        table_name="documentos",
-        db_url="postgresql+psycopg://user:pass@localhost:5432/db",
-        search_type=SearchType.hybrid,
-        embedder=OpenAIEmbedder(id="text-embedding-3-small"),
-    ),
-)
+async def build_system_messages_with_rag(
+    instructions: str,
+    text_message: str,
+    images: list[dict] | None = None,
+    history: list[dict] | None = None,
+) -> list[dict]:
+    """Build messages com contexto RAG injetado automaticamente."""
+    from app.tools.knowledge import _buscar_pgvector
 
-# Adicionar conteúdo
-knowledge.add_content(url="https://exemplo.com/documento.pdf")
-knowledge.add_content(text="Texto direto para indexar...")
+    # Buscar contexto relevante
+    docs = await _buscar_pgvector(text_message, top_k=3)
 
-# Criar agente com RAG
-agent = Agent(
-    model=OpenAIChat(id="gpt-4o"),
-    knowledge=knowledge,
-    search_knowledge=True,
-    instructions=["Sempre cite as fontes nas respostas."],
-    markdown=True,
-)
+    if docs:
+        context = "\n\n".join(d["content"][:500] for d in docs)
+        instructions = (
+            f"{instructions}\n\n"
+            f"## Contexto Relevante (Base de Conhecimento)\n{context}"
+        )
 
-agent.print_response("Explique o conceito X do documento", stream=True)
+    messages = [{"role": "system", "content": instructions}]
+    if history:
+        for msg in history:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if content and role in ("user", "assistant"):
+                messages.append({"role": role, "content": content})
+
+    messages.append({"role": "user", "content": text_message})
+    return messages
 ```
 
----
-
-## Configuração com LanceDb (Local/Serverless)
+### 3. Exemplo com Pinecone
 
 ```python
-from agno.knowledge.knowledge import Knowledge
-from agno.knowledge.embedder.openai import OpenAIEmbedder
-from agno.vectordb.lancedb import LanceDb, SearchType
+# app/tools/knowledge_pinecone.py
 
-# LanceDb é local e não requer servidor
-knowledge = Knowledge(
-    vector_db=LanceDb(
-        table_name="meus_documentos",
-        uri="tmp/lancedb",  # Diretório local
-        search_type=SearchType.vector,
-        embedder=OpenAIEmbedder(id="text-embedding-3-small"),
-    ),
-)
+from app.runtime import tool
+
+
+@tool
+def buscar_conhecimento(query: str, top_k: int = 5) -> str:
+    """Busca informacoes na base de conhecimento via Pinecone.
+
+    Args:
+        query: Pergunta ou termo de busca.
+        top_k: Numero maximo de resultados.
+    """
+    import openai
+    from pinecone import Pinecone
+
+    # Gerar embedding
+    client = openai.OpenAI()
+    embedding = client.embeddings.create(
+        input=query, model="text-embedding-3-small"
+    ).data[0].embedding
+
+    # Buscar no Pinecone
+    pc = Pinecone()
+    index = pc.Index("meu-indice")
+    results = index.query(vector=embedding, top_k=top_k, include_metadata=True)
+
+    if not results.matches:
+        return "Nenhum documento relevante encontrado."
+
+    formatted = []
+    for match in results.matches:
+        score = f"{match.score:.2f}"
+        content = match.metadata.get("content", "")[:500]
+        formatted.append(f"[Score: {score}] {content}")
+
+    return "\n\n".join(formatted)
 ```
 
----
-
-## Busca Híbrida com Reranking
+### 4. Registrar a Tool
 
 ```python
-from agno.knowledge.embedder.cohere import CohereEmbedder
-from agno.knowledge.reranker.cohere import CohereReranker
-from agno.vectordb.lancedb import LanceDb, SearchType
+# app/agent.py
 
-knowledge = Knowledge(
-    vector_db=LanceDb(
-        uri="tmp/lancedb",
-        table_name="docs",
-        search_type=SearchType.hybrid,  # Combina vector + keyword
-        embedder=CohereEmbedder(id="embed-v4.0"),
-        reranker=CohereReranker(model="rerank-v3.5"),  # Re-ordena resultados
-    ),
-)
+from app.tools.knowledge import buscar_conhecimento
+
+
+def get_tools_registry() -> ToolRegistry:
+    registry = ToolRegistry()
+
+    all_tools = [
+        # ... tools existentes
+        buscar_conhecimento,  # Tool de RAG
+    ]
+
+    for t in all_tools:
+        registry.register(t)
+
+    return registry
 ```
 
 ---
 
 ## Tipos de Busca
 
-| SearchType | Descrição | Quando Usar |
-|------------|-----------|-------------|
-| `vector` | Busca por similaridade semântica | Perguntas conceituais |
-| `keyword` | Busca por palavras-chave (BM25) | Termos específicos, nomes |
-| `hybrid` | Combina vector + keyword | Melhor precisão geral |
+| Tipo | Descricao | Quando Usar |
+|------|-----------|-------------|
+| **Vetorial** | Similaridade semantica (cosine/L2) | Perguntas conceituais |
+| **Keyword** | Busca por palavras-chave (BM25) | Termos especificos, nomes |
+| **Hibrida** | Combina vetorial + keyword | Melhor precisao geral |
 
 ---
 
-## Carregamento Assíncrono
+## Embedders Comuns
 
-```python
-import asyncio
-
-# Carregamento assíncrono para grandes volumes
-asyncio.run(
-    knowledge.add_content_async(url="https://docs.agno.com/guia-completo.pdf")
-)
-```
+| Modelo | Dimensoes | Uso |
+|--------|-----------|-----|
+| `text-embedding-3-small` (OpenAI) | 1536 | Geral, rapido, baixo custo |
+| `text-embedding-3-large` (OpenAI) | 3072 | Alta precisao |
+| `embed-v4.0` (Cohere) | 1024 | Multilingual |
+| `nomic-embed-text` (Ollama) | 768 | Local, privado, gratuito |
 
 ---
 
-## Filtros de Knowledge (Avançado)
+## Resumo
 
-### Filtros Simples (Dict)
-
-```python
-# Filtro por igualdade
-agent.run(
-    "Search for HR policies",
-    knowledge_filters={"department": "hr"},
-)
-
-# Múltiplos filtros (AND implícito)
-agent.run(
-    "Find recent tech articles",
-    knowledge_filters={
-        "category": "technology",
-        "year": 2024,
-    },
-)
-```
-
-### Filter Expressions (Operadores)
-
-Para consultas complexas, use filter expressions com operadores:
-
-```python
-from agno.filters import EQ, GT, LT, IN, AND, OR, NOT
-import json
-
-# EQ - Igualdade
-filter_expr = EQ("status", "published")
-
-# GT/LT - Maior/Menor que
-filter_expr = GT("views", 1000)
-filter_expr = LT("price", 100)
-
-# IN - Está na lista
-filter_expr = IN("category", ["tech", "science", "ai"])
-
-# AND - Todas condições
-filter_expr = AND(
-    EQ("status", "published"),
-    GT("views", 1000),
-)
-
-# OR - Qualquer condição
-filter_expr = OR(
-    EQ("category", "tech"),
-    EQ("category", "science"),
-)
-
-# NOT - Negação
-filter_expr = NOT(EQ("status", "archived"))
-
-# Serializar para API
-filter_json = json.dumps(filter_expr.to_dict())
-```
-
-### Filtros em Requisições HTTP
-
-```bash
-# Via cURL
-curl -X POST 'http://localhost:7777/agents/my-agent/runs' \
-  -F 'message=Find tech articles' \
-  -F 'knowledge_filters={"op": "EQ", "key": "category", "value": "technology"}'
-
-# AND complexo
-curl -X POST 'http://localhost:7777/agents/my-agent/runs' \
-  -F 'message=Find popular tech articles' \
-  -F 'knowledge_filters={
-    "op": "AND",
-    "conditions": [
-      {"op": "EQ", "key": "category", "value": "tech"},
-      {"op": "GT", "key": "views", "value": 1000}
-    ]
-  }'
-```
-
-### Operadores Disponíveis
-
-| Operador | Descrição | Exemplo |
-|----------|-----------|---------|
-| `EQ(key, value)` | Igual a | `EQ("status", "active")` |
-| `GT(key, value)` | Maior que | `GT("price", 100)` |
-| `LT(key, value)` | Menor que | `LT("age", 30)` |
-| `IN(key, [values])` | Está na lista | `IN("tag", ["a", "b"])` |
-| `AND(*filters)` | Todas verdadeiras | `AND(f1, f2, f3)` |
-| `OR(*filters)` | Alguma verdadeira | `OR(f1, f2)` |
-| `NOT(filter)` | Negação | `NOT(EQ("x", "y"))` |
-
----
-
-## Embedders Disponíveis
-
-### OpenAI Embedder
-
-```python
-from agno.knowledge.embedder.openai import OpenAIEmbedder
-
-embedder = OpenAIEmbedder(id="text-embedding-3-small")
-# Ou: text-embedding-3-large, text-embedding-ada-002
-```
-
-### Cohere Embedder
-
-```python
-from agno.knowledge.embedder.cohere import CohereEmbedder
-
-embedder = CohereEmbedder(id="embed-v4.0")
-# Ou: embed-multilingual-v3.0
-```
-
-### Google Embedder
-
-```python
-from agno.knowledge.embedder.google import GeminiEmbedder
-
-embedder = GeminiEmbedder(id="text-embedding-004")
-```
-
-### Ollama Embedder (Local)
-
-```python
-from agno.knowledge.embedder.ollama import OllamaEmbedder
-
-embedder = OllamaEmbedder(
-    id="nomic-embed-text",
-    host="http://localhost:11434",
-)
-```
-
-### Comparação de Embedders
-
-| Embedder | Dimensões | Uso | Custo |
-|----------|-----------|-----|-------|
-| `text-embedding-3-small` | 1536 | Geral, rápido | Baixo |
-| `text-embedding-3-large` | 3072 | Alta precisão | Médio |
-| `embed-v4.0` | 1024 | Multilingual | Médio |
-| `nomic-embed-text` | 768 | Local, privado | Gratuito |
-
----
-
-## Referências
-
-- [Agno Knowledge](https://docs.agno.com/basics/knowledge/overview)
-- [Agno Embedders](https://docs.agno.com/basics/knowledge/embedders)
+| Funcionalidade | Como Implementar |
+|----------------|------------------|
+| Banco vetorial | Tool que consulta pgvector/Pinecone diretamente |
+| Agentic RAG | Tool `buscar_conhecimento` com `@tool` decorator |
+| Traditional RAG | Injetar contexto no system prompt via `build_system_messages()` |
+| Embeddings | `openai.embeddings.create()` direto |
+| Busca hibrida | Implementar busca hibrida no SQL/servico vetorial |

@@ -1,146 +1,170 @@
-# Hooks (Pre/Post e Tool Hooks)
+# Hooks (Pre/Post Processamento)
 
-Hooks permitem interceptar e modificar comportamento em diferentes pontos da execução.
-
----
-
-## Tipos de Hooks
-
-| Tipo | Quando Executa | Uso |
-|------|----------------|-----|
-| **pre_hook** | Antes da tool ser chamada | Validação, logging |
-| **post_hook** | Após a tool retornar | Transformação, auditoria |
-| **tool_hooks** | Envolve toda execução de tool | Métricas, observabilidade |
-| **Agent pre_hook** | Antes do agente processar | Transformação de input |
-| **Agent post_hook** | Após o agente processar | Transformação de output |
+Hooks permitem interceptar e modificar o comportamento do agente em diferentes pontos da execucao -- antes de processar o input, apos obter a resposta, ou envolvendo chamadas de tools.
 
 ---
 
-## Pre e Post Hooks em Tools
+## Implementacao
+
+O sistema utiliza LiteLLM + agent loop proprio, onde hooks sao implementados diretamente no pipeline de execucao do agente.
+
+---
+
+## Como Implementar
+
+### 1. Pre/Post Hook no Pipeline do Agente
+
+A funcao `execute_agent()` em `app/main.py` e o ponto central de execucao. Adicione logica antes e depois de `run_agent_loop()`:
 
 ```python
-from agno.agent import Agent
-from agno.tools import FunctionCall, tool
+# app/main.py (dentro de execute_agent)
 
+from app.agent_loop import run_agent_loop
 
-def pre_hook(fc: FunctionCall):
-    """Executa ANTES da tool ser chamada."""
-    print(f"[PRE] Chamando: {fc.function.name}")
-    print(f"[PRE] Argumentos: {fc.arguments}")
+async def execute_agent(request, debug=False):
+    text_message, images = parse_multimodal_input(request.input)
 
+    # === PRE-HOOK: antes do agente processar ===
+    text_message = await pre_process_input(text_message)
 
-def post_hook(fc: FunctionCall):
-    """Executa APÓS a tool retornar."""
-    print(f"[POST] Completou: {fc.function.name}")
-    print(f"[POST] Resultado: {fc.result}")
+    # Execucao normal do agente
+    response = await run_agent_loop(
+        messages=messages,
+        tools=tools,
+        run_context=run_context,
+        model=model,
+    )
 
+    # === POST-HOOK: apos o agente responder ===
+    response = await post_process_output(response)
 
-@tool(pre_hook=pre_hook, post_hook=post_hook)
-def buscar_dados(query: str) -> str:
-    """Busca dados no sistema.
-
-    Args:
-        query: Termo de busca.
-    """
-    return f"Resultados para: {query}"
-
-
-agent = Agent(tools=[buscar_dados], markdown=True)
-agent.print_response("Busque informações sobre Python", stream=True)
+    return response
 ```
 
----
-
-## Tool Hooks no Agente
+### 2. Pre-Hook: Transformacao de Input
 
 ```python
+# app/hooks.py
+
+import re
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+async def pre_process_input(text: str) -> str:
+    """Pre-hook: transforma o input antes do agente processar."""
+    logger.info(f"[PRE-HOOK] Input original: {text[:100]}")
+
+    # Exemplo: normalizar texto
+    text = text.strip()
+
+    # Exemplo: remover URLs
+    text = re.sub(r'https?://\S+', '[URL removida]', text)
+
+    return text
+```
+
+### 3. Post-Hook: Transformacao de Output
+
+```python
+# app/hooks.py
+
+from app.agent_loop import AgentResponse
+
+
+async def post_process_output(response: AgentResponse) -> AgentResponse:
+    """Post-hook: transforma a resposta apos o agente processar."""
+    logger.info(f"[POST-HOOK] Tokens usados: {response.input_tokens + response.output_tokens}")
+
+    # Exemplo: adicionar disclaimer
+    if "investimento" in response.content.lower():
+        response.content += "\n\n_Nota: isto nao constitui aconselhamento financeiro._"
+
+    return response
+```
+
+### 4. Tool Hooks (Wrappers ao Redor de Tools)
+
+Para interceptar execucoes de tools individuais, crie um wrapper no registro de tools:
+
+```python
+# app/tools/minha_tool.py
+
 import time
-from typing import Any, Callable, Dict
-from agno.agent import Agent
-from agno.tools.duckduckgo import DuckDuckGoTools
-from agno.utils.log import logger
+import logging
+from app.runtime import tool
+
+logger = logging.getLogger(__name__)
 
 
-def logger_hook(
-    function_name: str,
-    function_call: Callable,
-    arguments: Dict[str, Any]
-):
-    """Hook que envolve toda execução de tool."""
-    # Detectar delegação em times
-    if function_name == "delegate_task_to_member":
-        member_id = arguments.get("member_id")
-        logger.info(f"Delegando tarefa para: {member_id}")
+def com_logging(func):
+    """Decorator que adiciona pre/post hooks a uma tool."""
+    from functools import wraps
 
-    # Medir tempo de execução
-    start_time = time.time()
-    result = function_call(**arguments)
-    duration = time.time() - start_time
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        # Pre-hook
+        logger.info(f"[TOOL-PRE] Chamando: {func.__name__} args={kwargs}")
+        start = time.time()
 
-    logger.info(f"Tool {function_name} executou em {duration:.2f}s")
-    return result
+        result = func(*args, **kwargs)
+
+        # Post-hook
+        duration = time.time() - start
+        logger.info(f"[TOOL-POST] {func.__name__} completou em {duration:.2f}s")
+        return result
+
+    # Preservar metadados para o @tool decorator
+    wrapper.__name__ = func.__name__
+    wrapper.__doc__ = func.__doc__
+    return wrapper
 
 
-agent = Agent(
-    tools=[DuckDuckGoTools()],
-    tool_hooks=[logger_hook],
-    markdown=True,
-)
+@tool
+@com_logging
+def buscar_dados(query: str) -> str:
+    """Busca dados no sistema."""
+    return f"Resultados para: {query}"
 ```
 
----
+### 5. Hook Global no Agent Loop
 
-## Pre-Hook de Transformação de Input
+Para interceptar **todas** as chamadas de tools, modifique o `ToolRegistry.execute()` em `app/runtime.py`:
 
 ```python
-from typing import Optional
-from agno.agent import Agent
-from agno.run.agent import RunInput
-from agno.session.agent import AgentSession
+# Em app/runtime.py, dentro de ToolRegistry
 
+class ToolRegistry:
+    def __init__(self):
+        self._tools: dict[str, ToolDef] = {}
+        self._hooks: list[Callable] = []  # Lista de hooks globais
 
-def transform_input(
-    run_input: RunInput,
-    session: AgentSession,
-    user_id: Optional[str] = None,
-    debug_mode: Optional[bool] = None,
-) -> None:
-    """Pre-hook: Transforma o input antes do agente processar."""
-    transformer = Agent(
-        name="Transformador",
-        instructions=["Reescreva o pedido para ser mais claro e específico."],
-    )
+    def add_hook(self, hook: Callable):
+        """Adiciona um hook global executado em cada chamada de tool."""
+        self._hooks.append(hook)
 
-    result = transformer.run(
-        f"Transforme este pedido: '{run_input.input_content}'"
-    )
+    async def execute(self, name, arguments, run_context):
+        # Executar pre-hooks
+        for hook in self._hooks:
+            hook(name, arguments, "pre")
 
-    # Sobrescreve o input original
-    run_input.input_content = result.content
+        result = ...  # execucao normal
 
+        # Executar post-hooks
+        for hook in self._hooks:
+            hook(name, arguments, "post", result)
 
-agent = Agent(
-    pre_hook=transform_input,
-    instructions=["Você é um assistente de investimentos."],
-)
+        return result
 ```
 
 ---
 
-## Hooks em Times
+## Resumo
 
-```python
-from agno.team import Team
-
-# Hooks aplicados a todas as tools do time e seus membros
-team = Team(
-    members=[agent1, agent2],
-    tool_hooks=[logger_hook],
-)
-```
-
----
-
-## Referências
-
-- [Agno Hooks](https://docs.agno.com/tools/hooks)
+| Tipo de Hook | Onde Implementar |
+|-------------|-----------------|
+| **Pre-processamento de input** | `execute_agent()` em `app/main.py`, antes de `run_agent_loop()` |
+| **Pos-processamento de output** | `execute_agent()` em `app/main.py`, apos `run_agent_loop()` |
+| **Hook por tool individual** | Decorator wrapper na propria tool |
+| **Hook global em todas as tools** | `ToolRegistry` em `app/runtime.py` |

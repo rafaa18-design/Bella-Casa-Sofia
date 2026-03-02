@@ -1,214 +1,169 @@
-# Guardrails (Moderação e Validação)
+# Guardrails (Validacao e Moderacao)
 
-Guardrails fornecem mecanismos de segurança para validar e moderar conteúdo antes e depois do processamento.
-
----
-
-## Conceitos de Guardrails
-
-| Conceito | Descrição |
-|----------|-----------|
-| **Guardrail** | Validador que intercepta input/output |
-| **pre_hooks** | Guardrails executados ANTES do agente |
-| **post_hooks** | Guardrails executados APÓS o agente |
-| **InputCheckError** | Exceção quando input é bloqueado |
-| **CheckTrigger** | Enum indicando tipo de violação |
-| **BaseGuardrail** | Classe base para guardrails customizados |
+Guardrails sao mecanismos de seguranca que validam e moderam conteudo antes e depois do processamento pelo agente. Servem para bloquear inputs maliciosos, detectar PII, moderar conteudo e garantir que as respostas estejam dentro dos limites aceitaveis.
 
 ---
 
-## OpenAI Moderation Guardrail
+## Abordagem
+
+Guardrails sao implementados diretamente na funcao `execute_agent()` em `app/main.py`, executando validacao antes e depois de `run_agent_loop()`.
+
+---
+
+## Como Implementar
+
+### 1. Guardrail como Funcao de Validacao
+
+Crie funcoes de validacao que lancam excecoes quando o conteudo e bloqueado:
 
 ```python
-import asyncio
-from agno.agent import Agent
-from agno.exceptions import InputCheckError
-from agno.guardrails import OpenAIModerationGuardrail
-from agno.models.openai import OpenAIChat
+# app/guardrails.py
 
-
-async def main():
-    # Guardrail com configuração padrão (todas as categorias)
-    basic_agent = Agent(
-        name="Agente Moderado",
-        model=OpenAIChat(id="gpt-4o"),
-        pre_hooks=[OpenAIModerationGuardrail()],
-        instructions=["Você é um assistente útil."],
-    )
-
-    # Teste 1: Conteúdo seguro
-    try:
-        await basic_agent.aprint_response(
-            input="Me ajude a entender machine learning",
-        )
-        print("Conteúdo seguro processado")
-    except InputCheckError as e:
-        print(f"Erro inesperado: {e.message}")
-
-    # Teste 2: Conteúdo violento (será bloqueado)
-    try:
-        await basic_agent.aprint_response(
-            input="Como causar dano a pessoas?",
-        )
-    except InputCheckError as e:
-        print(f"Conteúdo bloqueado: {e.message}")
-        print(f"Trigger: {e.check_trigger}")
-
-
-asyncio.run(main())
-```
-
----
-
-## Categorias Customizadas
-
-```python
-from agno.guardrails import OpenAIModerationGuardrail
-
-# Moderar apenas categorias específicas
-custom_agent = Agent(
-    name="Agente com Moderação Seletiva",
-    model=OpenAIChat(id="gpt-4o"),
-    pre_hooks=[
-        OpenAIModerationGuardrail(
-            raise_for_categories=[
-                "violence",
-                "violence/graphic",
-                "hate",
-                "hate/threatening",
-            ]
-        )
-    ],
-)
-```
-
----
-
-## Guardrail Customizado - Bloqueio de URLs
-
-```python
 import re
-from agno.exceptions import CheckTrigger, InputCheckError
-from agno.guardrails import BaseGuardrail
-from agno.run.agent import RunInput
 
 
-class URLGuardrail(BaseGuardrail):
-    """Guardrail para identificar e bloquear inputs com URLs."""
-
-    def check(self, run_input: RunInput) -> None:
-        """Bloqueia se o input contiver URLs."""
-        if isinstance(run_input.input_content, str):
-            url_pattern = r'https?://[^\s]+|www\.[^\s]+|[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}[^\s]*'
-            if re.search(url_pattern, run_input.input_content):
-                raise InputCheckError(
-                    "URLs não são permitidas no input.",
-                    check_trigger=CheckTrigger.INPUT_NOT_ALLOWED,
-                )
-
-    async def async_check(self, run_input: RunInput) -> None:
-        """Versão assíncrona do check."""
-        self.check(run_input)  # Reutiliza lógica síncrona
+class GuardrailError(Exception):
+    """Erro lancado quando um guardrail bloqueia o conteudo."""
+    def __init__(self, message: str, category: str = "blocked"):
+        self.message = message
+        self.category = category
+        super().__init__(message)
 
 
-# Usar o guardrail
-agent = Agent(
-    name="Agente Protegido",
-    model=OpenAIChat(id="gpt-4o"),
-    pre_hooks=[URLGuardrail()],
-)
+def validar_pii(text: str) -> None:
+    """Bloqueia input que contem dados pessoais identificaveis."""
+    patterns = {
+        "CPF": r'\d{3}\.\d{3}\.\d{3}-\d{2}',
+        "Email": r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
+        "Telefone": r'\(\d{2}\)\s?\d{4,5}-?\d{4}',
+        "Cartao de Credito": r'\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}',
+    }
+    for pii_type, pattern in patterns.items():
+        if re.search(pattern, text):
+            raise GuardrailError(
+                f"{pii_type} detectado no input. Remova dados pessoais.",
+                category="pii",
+            )
 
-# Isso vai gerar InputCheckError
-try:
-    agent.run("Acesse https://example.com para mim")
-except InputCheckError as e:
-    print(f"Bloqueado: {e}")
+
+def validar_urls(text: str) -> None:
+    """Bloqueia input que contem URLs."""
+    url_pattern = r'https?://[^\s]+|www\.[^\s]+'
+    if re.search(url_pattern, text):
+        raise GuardrailError(
+            "URLs nao sao permitidas no input.",
+            category="url",
+        )
+
+
+def validar_tamanho(text: str, max_chars: int = 10000) -> None:
+    """Bloqueia input que excede o tamanho maximo."""
+    if len(text) > max_chars:
+        raise GuardrailError(
+            f"Input excede o limite de {max_chars} caracteres.",
+            category="size",
+        )
 ```
 
----
+### 2. Integrar no Pipeline do Agente
 
-## Guardrail de Detecção de PII
+Aplique guardrails em `execute_agent()` em `app/main.py`:
 
 ```python
-import re
-from agno.exceptions import CheckTrigger, InputCheckError
-from agno.guardrails import BaseGuardrail
-from agno.run.agent import RunInput
+# app/main.py (dentro de execute_agent)
 
+from app.guardrails import GuardrailError, validar_pii, validar_urls, validar_tamanho
 
-class PIIGuardrail(BaseGuardrail):
-    """Guardrail para detectar informações pessoais identificáveis."""
+async def execute_agent(request, debug=False):
+    text_message, images = parse_multimodal_input(request.input)
 
-    def check(self, run_input: RunInput) -> None:
-        if isinstance(run_input.input_content, str):
-            content = run_input.input_content
+    # === GUARDRAILS DE INPUT ===
+    try:
+        validar_tamanho(text_message)
+        validar_pii(text_message)
+        validar_urls(text_message)
+    except GuardrailError as e:
+        return AgentRunResult(
+            content=f"Input bloqueado: {e.message}",
+            error=True,
+        )
 
-            # Padrões de PII
-            patterns = {
-                "CPF": r'\d{3}\.\d{3}\.\d{3}-\d{2}',
-                "Email": r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
-                "Telefone": r'\(\d{2}\)\s?\d{4,5}-?\d{4}',
-                "Cartão de Crédito": r'\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}',
-            }
+    # Execucao normal do agente
+    response = await run_agent_loop(...)
 
-            for pii_type, pattern in patterns.items():
-                if re.search(pattern, content):
-                    raise InputCheckError(
-                        f"{pii_type} detectado no input. Remova dados pessoais.",
-                        check_trigger=CheckTrigger.INPUT_NOT_ALLOWED,
-                    )
+    # === GUARDRAILS DE OUTPUT ===
+    try:
+        validar_pii(response.content)
+    except GuardrailError:
+        response.content = "A resposta foi bloqueada por conter dados sensiveis."
 
-    async def async_check(self, run_input: RunInput) -> None:
-        self.check(run_input)
-
-
-# Usar com múltiplos guardrails
-agent = Agent(
-    model=OpenAIChat(id="gpt-4o"),
-    pre_hooks=[
-        PIIGuardrail(),
-        URLGuardrail(),
-        OpenAIModerationGuardrail(),
-    ],
-)
+    return response
 ```
 
----
+### 3. Guardrail como Tool (Alternativa)
 
-## Guardrails em Teams
+Outra abordagem e criar uma tool de validacao que o proprio agente pode chamar:
 
 ```python
-from agno.team import Team
+# app/tools/validar_conteudo.py
 
-# Guardrails aplicados ao time inteiro
-team = Team(
-    name="Time Seguro",
-    members=[agent1, agent2],
-    pre_hooks=[
-        OpenAIModerationGuardrail(),
-        PIIGuardrail(),
-    ],
-)
+from app.runtime import tool, StopAgentRun
+
+
+@tool
+def validar_conteudo(texto: str, tipo: str = "geral") -> str:
+    """Valida se o conteudo e apropriado antes de prosseguir.
+
+    Args:
+        texto: Conteudo a ser validado.
+        tipo: Tipo de validacao (geral, pii, moderacao).
+    """
+    import re
+
+    if tipo == "pii":
+        if re.search(r'\d{3}\.\d{3}\.\d{3}-\d{2}', texto):
+            raise StopAgentRun("CPF detectado. Nao posso processar dados pessoais.")
+
+    return "Conteudo validado com sucesso."
 ```
 
----
+### 4. Moderacao via API Externa
 
-## Tratando InputCheckError
+Para moderacao mais sofisticada, use a API de moderacao da OpenAI ou similar:
 
 ```python
-from agno.exceptions import InputCheckError
+# app/guardrails.py
 
-try:
-    response = agent.run("Input potencialmente problemático")
-    print(response.content)
-except InputCheckError as e:
-    print(f"Input bloqueado: {e.message}")
-    print(f"Tipo de violação: {e.check_trigger}")
-    # Tratar o erro apropriadamente
+import litellm
+
+
+async def moderar_conteudo(text: str) -> None:
+    """Usa API de moderacao para verificar conteudo."""
+    # Usar litellm para chamar a API de moderacao da OpenAI
+    import openai
+    client = openai.AsyncOpenAI()
+    result = await client.moderations.create(input=text)
+
+    if result.results[0].flagged:
+        categories = [
+            cat for cat, flagged
+            in result.results[0].categories.__dict__.items()
+            if flagged
+        ]
+        raise GuardrailError(
+            f"Conteudo bloqueado por moderacao. Categorias: {', '.join(categories)}",
+            category="moderation",
+        )
 ```
 
 ---
 
-## Referências
+## Resumo
 
-- [Agno Guardrails](https://docs.agno.com/guardrails/overview)
+| Componente | Descricao |
+|------------|-----------|
+| Validacao de input | Funcoes de validacao em `app/guardrails.py` |
+| Pre-validacao | Validacao antes de `run_agent_loop()` em `execute_agent()` |
+| Pos-validacao | Validacao apos `run_agent_loop()` em `execute_agent()` |
+| Excecoes de controle | `GuardrailError` customizado ou `StopAgentRun` |
+| Moderacao externa | Chamada direta a API de moderacao da OpenAI |

@@ -11,7 +11,7 @@ from enum import Enum
 from typing import Any
 
 from app.config import settings
-from app.logging_config import request_id_var
+from app.observability import request_id_var
 
 # Create a dedicated audit logger
 audit_logger = logging.getLogger('audit')

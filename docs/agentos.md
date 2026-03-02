@@ -1,798 +1,439 @@
-# AgentOS (Runtime e Recursos Avançados)
+# Arquitetura da Aplicacao FastAPI
 
-O AgentOS é o runtime do Agno para servir agentes em produção com recursos como HITL, RBAC, Background Tasks e Remote Execution.
-
----
-
-## Human-in-the-Loop (HITL)
-
-HITL permite que agentes pausem e aguardem aprovação humana antes de executar operações sensíveis.
-
-### Conceitos HITL
-
-| Conceito | Descrição |
-|----------|-----------|
-| **requires_confirmation** | Decorator que marca tool como requerendo aprovação |
-| **is_paused** | Estado do run quando aguarda confirmação |
-| **active_requirements** | Lista de ações pendentes de aprovação |
-| **confirm()/reject()** | Métodos para aprovar ou rejeitar ação |
-
-### Tool com Confirmação
-
-```python
-from agno.tools import tool
-
-@tool(requires_confirmation=True)
-def delete_records(table_name: str, count: int) -> str:
-    """Delete records from a database table.
-
-    Args:
-        table_name: Name of the table
-        count: Number of records to delete
-
-    Returns:
-        str: Confirmation message
-    """
-    return f"Deleted {count} records from {table_name}"
-
-
-@tool(requires_confirmation=True)
-def send_notification(recipient: str, message: str) -> str:
-    """Send a notification to a user.
-
-    Args:
-        recipient: Email or username of the recipient
-        message: Notification message
-
-    Returns:
-        str: Confirmation message
-    """
-    return f"Sent notification to {recipient}: {message}"
-```
-
-### Agente com HITL
-
-```python
-from agno.agent import Agent
-from agno.db.postgres import PostgresDb
-from agno.models.openai import OpenAIChat
-from agno.os import AgentOS
-
-db = PostgresDb(db_url="postgresql+psycopg://ai:ai@localhost:5532/ai")
-
-agent = Agent(
-    name="Data Manager",
-    id="data_manager",
-    model=OpenAIChat(id="gpt-4o-mini"),
-    tools=[delete_records, send_notification],
-    instructions=["You help users manage data operations"],
-    db=db,
-    markdown=True,
-)
-
-agent_os = AgentOS(
-    id="agentos-hitl",
-    agents=[agent],
-)
-
-app = agent_os.get_app()
-```
-
-### Fluxo de Confirmação
-
-```python
-from rich.console import Console
-from rich.prompt import Prompt
-
-console = Console()
-
-run_response = agent.run("Delete 10 records from users table")
-
-while run_response.is_paused:
-    for requirement in run_response.active_requirements:
-        if requirement.needs_confirmation:
-            # Mostrar detalhes da ação
-            console.print(
-                f"Tool [bold blue]{requirement.tool_execution.tool_name}"
-                f"({requirement.tool_execution.tool_args})[/] requires confirmation."
-            )
-
-            # Pedir confirmação
-            message = Prompt.ask(
-                "Do you want to continue?",
-                choices=["y", "n"],
-                default="y"
-            ).strip().lower()
-
-            if message == "n":
-                requirement.reject("Action rejected by user")
-            else:
-                requirement.confirm()
-
-    # Continuar execução
-    run_response = agent.continue_run(
-        run_id=run_response.run_id,
-        requirements=run_response.requirements,
-    )
-```
-
-### HITL com Múltiplas Tools
-
-```python
-from agno.tools.wikipedia import WikipediaTools
-
-agent = Agent(
-    model=OpenAIChat(id="gpt-4o-mini"),
-    tools=[
-        get_top_hackernews_stories,  # @tool(requires_confirmation=True)
-        WikipediaTools(requires_confirmation_tools=["search_wikipedia"]),
-    ],
-    markdown=True,
-    db=SqliteDb(db_file="tmp/example.db"),
-)
-```
+Este projeto utiliza uma aplicacao FastAPI pura como runtime. Toda a infraestrutura -- autenticacao, rate limiting, seguranca, ciclo de vida -- e implementada de forma customizada.
 
 ---
 
-## RBAC (Role-Based Access Control)
+## Visao Geral
 
-RBAC permite controlar acesso a agentes e recursos usando JWT com escopos.
-
-### Escopos Disponíveis
-
-| Escopo | Descrição |
-|--------|-----------|
-| `agents:read` | Listar e visualizar todos os agentes |
-| `agents:write` | Criar e atualizar agentes |
-| `agents:delete` | Deletar agentes |
-| `agents:run` | Executar qualquer agente |
-| `agents:<agent-id>:read` | Visualizar agente específico |
-| `agents:<agent-id>:run` | Executar agente específico |
-| `agents:*:read` | Visualizar qualquer agente (wildcard) |
-| `agents:*:run` | Executar qualquer agente (wildcard) |
-| `sessions:read` | Ler sessões |
-| `sessions:write` | Escrever sessões |
-| `agent_os:admin` | Acesso administrativo total |
-
-### Configuração RBAC
-
-```python
-import os
-from datetime import UTC, datetime, timedelta
-
-import jwt
-from agno.agent import Agent
-from agno.db.postgres import PostgresDb
-from agno.models.openai import OpenAIChat
-from agno.os import AgentOS
-from agno.os.config import AuthorizationConfig
-from agno.tools.duckduckgo import DuckDuckGoTools
-
-# JWT Secret (use variável de ambiente em produção)
-JWT_SECRET = os.getenv("JWT_VERIFICATION_KEY", "your-secret-key-at-least-256-bits-long")
-
-# Database
-db = PostgresDb(db_url="postgresql+psycopg://ai:ai@localhost:5532/ai")
-
-# Criar agente
-research_agent = Agent(
-    id="research-agent",
-    name="Research Agent",
-    model=OpenAIChat(id="gpt-4o"),
-    db=db,
-    tools=[DuckDuckGoTools()],
-    add_history_to_context=True,
-    markdown=True,
-)
-
-# AgentOS com RBAC
-agent_os = AgentOS(
-    id="my-agent-os",
-    description="RBAC Protected AgentOS",
-    agents=[research_agent],
-    authorization=True,
-    authorization_config=AuthorizationConfig(
-        verification_keys=[JWT_SECRET],
-        algorithm="HS256",
-    ),
-)
-
-app = agent_os.get_app()
-```
-
-### Gerando Tokens JWT
-
-```python
-from datetime import UTC, datetime, timedelta
-import jwt
-
-JWT_SECRET = "your-secret-key-at-least-256-bits-long"
-
-# Token de usuário (leitura e execução)
-user_token = jwt.encode(
-    {
-        "sub": "user_123",
-        "session_id": "session_456",
-        "scopes": ["agents:read", "agents:run"],
-        "exp": datetime.now(UTC) + timedelta(hours=24),
-        "iat": datetime.now(UTC),
-    },
-    JWT_SECRET,
-    algorithm="HS256",
-)
-
-# Token admin (acesso total)
-admin_token = jwt.encode(
-    {
-        "sub": "admin_789",
-        "session_id": "admin_session_123",
-        "scopes": ["agent_os:admin"],
-        "exp": datetime.now(UTC) + timedelta(hours=24),
-        "iat": datetime.now(UTC),
-    },
-    JWT_SECRET,
-    algorithm="HS256",
-)
-
-# Token com acesso específico
-specific_token = jwt.encode(
-    {
-        "sub": "user_456",
-        "scopes": ["agents:research-agent:run"],  # Só pode executar research-agent
-        "exp": datetime.now(UTC) + timedelta(hours=24),
-    },
-    JWT_SECRET,
-    algorithm="HS256",
-)
-```
-
-### Endpoints e Escopos Necessários
-
-| Endpoint | Método | Escopo Necessário |
-|----------|--------|-------------------|
-| `/agents` | GET | `agents:read` |
-| `/agents/{agent_id}` | GET | `agents:read` ou `agents:<id>:read` |
-| `/agents/{agent_id}/runs` | POST | `agents:run` ou `agents:<id>:run` |
-| `/sessions` | GET | `sessions:read` |
-| `/sessions` | POST | `sessions:write` |
-
----
-
-## Background Tasks
-
-Background Tasks permitem executar hooks de forma assíncrona sem bloquear a resposta.
-
-### Habilitação Global
-
-```python
-from agno.os import AgentOS
-
-agent_os = AgentOS(
-    agents=[agent],
-    teams=[team],
-    workflows=[workflow],
-    run_hooks_in_background=True,  # Todos os hooks rodam em background
-)
-```
-
-### Hooks em Background
-
-```python
-import asyncio
-from agno.agent import Agent
-from agno.db.sqlite import SqliteDb
-from agno.models.openai import OpenAIChat
-from agno.os import AgentOS
-from agno.run.agent import RunInput
-
-
-# Pre-hook para logging
-def log_request(run_input: RunInput, agent):
-    """Pre-hook que roda em background antes do processamento."""
-    print(f"[Background Pre-Hook] Request for agent: {agent.name}")
-    print(f"[Background Pre-Hook] Input: {run_input.input_content}")
-
-
-# Post-hook para analytics
-async def log_analytics(run_output, agent, session):
-    """Post-hook que roda em background após a resposta."""
-    print(f"[Background Post-Hook] Logging for run: {run_output.run_id}")
-
-    # Operação lenta não bloqueia resposta
-    await asyncio.sleep(2)
-    print("[Background Post-Hook] Analytics logged!")
-
-
-# Post-hook para notificações
-async def send_notification(run_output, agent):
-    """Envia notificações sem bloquear."""
-    print(f"[Background Post-Hook] Sending notification for: {agent.name}")
-    await asyncio.sleep(3)
-    print("[Background Post-Hook] Notification sent!")
-
-
-# Agente com hooks
-agent = Agent(
-    id="background-task-agent",
-    name="BackgroundTaskAgent",
-    model=OpenAIChat(id="gpt-4o-mini"),
-    instructions="You are a helpful assistant",
-    db=SqliteDb(db_file="tmp/agent.db"),
-    pre_hooks=[log_request],
-    post_hooks=[log_analytics, send_notification],
-    markdown=True,
-)
-
-# AgentOS com background hooks
-agent_os = AgentOS(
-    agents=[agent],
-    run_hooks_in_background=True,
-)
-
-app = agent_os.get_app()
-```
-
-### Hook Individual em Background
-
-```python
-from agno.hooks import hook
-
-@hook(run_in_background=True)
-async def send_slack_notification(run_output, agent):
-    """Apenas este hook roda em background."""
-    await send_slack_message(run_output.content)
-
-
-# Hooks sem decorator rodam normalmente
-def sync_hook(run_output, agent):
-    """Este hook bloqueia a resposta."""
-    print(f"Sync hook for {agent.name}")
-```
-
-### Considerações sobre Pre-Hooks em Background
-
-```python
-# IMPORTANTE: Pre-hooks em background NÃO podem modificar run_input
-# porque executam após o run já ter iniciado
-
-# Use pre-hooks em background apenas para:
-# - Logging
-# - Métricas
-# - Notificações
-
-# NÃO use para:
-# - Validação de input
-# - Modificação de input
-# - Verificações de autorização
-```
-
----
-
-## Remote Execution
-
-Remote Execution permite comunicação entre instâncias AgentOS.
-
-### RemoteAgent
-
-```python
-import asyncio
-from agno.agent import RemoteAgent
-
-
-async def remote_agent_example():
-    """Conectar e executar agente remoto."""
-    agent = RemoteAgent(
-        base_url="http://localhost:7777",
-        agent_id="assistant-agent",
-    )
-
-    response = await agent.arun(
-        "What is the capital of France?",
-        user_id="user-123",
-        session_id="session-456",
-    )
-    print(response.content)
-
-
-asyncio.run(remote_agent_example())
-```
-
-### RemoteAgent com Streaming
-
-```python
-import asyncio
-from agno.agent import RemoteAgent
-
-
-async def remote_streaming_example():
-    """Stream de respostas de agente remoto."""
-    agent = RemoteAgent(
-        base_url="http://localhost:7777",
-        agent_id="assistant-agent",
-    )
-
-    async for chunk in agent.arun(
-        "Tell me a short story about a brave knight",
-        session_id="session-456",
-        user_id="user-123",
-        stream=True,
-    ):
-        if hasattr(chunk, "content") and chunk.content:
-            print(chunk.content, end="", flush=True)
-
-
-asyncio.run(remote_streaming_example())
-```
-
-### RemoteTeam
-
-```python
-import asyncio
-from agno.team import RemoteTeam
-
-
-async def remote_team_example():
-    """Conectar e executar team remoto."""
-    team = RemoteTeam(
-        base_url="http://localhost:7777",
-        team_id="research-team",
-    )
-
-    response = await team.arun(
-        "Research the latest trends in AI",
-        user_id="user-123",
-        session_id="session-456",
-    )
-    print(response.content)
-
-
-asyncio.run(remote_team_example())
-```
-
-### RemoteTeam com Streaming
-
-```python
-async def remote_team_streaming():
-    """Stream de respostas de team remoto."""
-    team = RemoteTeam(
-        base_url="http://localhost:7778",
-        team_id="research-team",
-    )
-
-    async for chunk in team.arun(
-        "Analyze the data on the rise of AI",
-        stream=True,
-    ):
-        if hasattr(chunk, "content") and chunk.content:
-            print(chunk.content, end="", flush=True)
-```
-
-### Expondo Agentes para Acesso Remoto
-
-```python
-from agno.agent import Agent
-from agno.models.openai import OpenAIChat
-from agno.os import AgentOS
-
-# Criar agente
-agent = Agent(
-    id="assistant-agent",
-    name="Assistant",
-    model=OpenAIChat(id="gpt-4o"),
-)
-
-# Expor via AgentOS
-agent_os = AgentOS(
-    agents=[agent],
-)
-
-app = agent_os.get_app()
-
-if __name__ == "__main__":
-    agent_os.serve(app="server:app", port=7777, reload=True)
-```
-
-### Expondo Teams para Acesso Remoto
-
-```python
-from agno.team import Team
-from agno.os import AgentOS
-
-research_team = Team(
-    id="research-team",
-    name="Research Team",
-    members=[researcher, writer],
-)
-
-agent_os = AgentOS(
-    teams=[research_team],
-)
-
-app = agent_os.get_app()
-```
-
----
-
-## Combinando Recursos
-
-### AgentOS Completo
-
-```python
-from agno.agent import Agent
-from agno.db.postgres import PostgresDb
-from agno.models.openai import OpenAIChat
-from agno.os import AgentOS
-from agno.os.config import AuthorizationConfig
-from agno.os.interfaces.a2a import A2A
-from agno.tools import tool
-
-# Database
-db = PostgresDb(db_url="postgresql+psycopg://ai:ai@localhost:5532/ai")
-
-# Tool HITL
-@tool(requires_confirmation=True)
-def sensitive_operation(data: str) -> str:
-    """Operação sensível que requer confirmação."""
-    return f"Executed: {data}"
-
-# Hooks
-async def log_analytics(run_output, agent, session):
-    print(f"Analytics for {run_output.run_id}")
-
-# Agente
-agent = Agent(
-    id="production-agent",
-    name="Production Agent",
-    model=OpenAIChat(id="gpt-4o"),
-    tools=[sensitive_operation],
-    post_hooks=[log_analytics],
-    db=db,
-)
-
-# AgentOS com todos os recursos
-agent_os = AgentOS(
-    id="production-os",
-    agents=[agent],
-    # RBAC
-    authorization=True,
-    authorization_config=AuthorizationConfig(
-        verification_keys=[JWT_SECRET],
-        algorithm="HS256",
-    ),
-    # Background Tasks
-    run_hooks_in_background=True,
-    # A2A Protocol
-    a2a_interface=True,
-)
-
-app = agent_os.get_app()
-```
-
----
-
-## MCP Server
-
-Exponha seu AgentOS como um servidor MCP (Model Context Protocol) para integração com outros sistemas.
-
-### Habilitar MCP Server
-
-```python
-from agno.agent import Agent
-from agno.db.sqlite import SqliteDb
-from agno.models.anthropic import Claude
-from agno.os import AgentOS
-from agno.tools.duckduckgo import DuckDuckGoTools
-
-db = SqliteDb(db_file="tmp/agentos.db")
-
-agent = Agent(
-    id="web-research-agent",
-    name="Web Research Agent",
-    model=Claude(id="claude-sonnet-4-20250514"),
-    db=db,
-    tools=[DuckDuckGoTools()],
-    add_history_to_context=True,
-    markdown=True,
-)
-
-# Habilitar MCP Server
-agent_os = AgentOS(
-    description="AgentOS with MCP enabled",
-    agents=[agent],
-    enable_mcp_server=True,  # MCP disponível em /mcp
-)
-
-app = agent_os.get_app()
-
-if __name__ == "__main__":
-    # MCP server em http://localhost:7777/mcp
-    agent_os.serve(app="mcp_example:app", port=7777)
-```
-
-### Usando o MCP Endpoint
-
-```bash
-# Executar agente via MCP
-curl -X POST http://localhost:7777/mcp \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tool_name": "run_agent",
-    "args": {
-      "agent_id": "web-research-agent",
-      "message": "What is the capital of France?"
-    }
-  }'
-```
-
----
-
-## Middleware Customizado
-
-### Rate Limiting
-
-```python
-import time
-from collections import defaultdict, deque
-from typing import Dict
-from fastapi import Request, Response
-from fastapi.responses import JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
-
-
-class RateLimitMiddleware(BaseHTTPMiddleware):
-    """Rate limiting por IP."""
-
-    def __init__(self, app, requests_per_minute: int = 60, window_size: int = 60):
-        super().__init__(app)
-        self.requests_per_minute = requests_per_minute
-        self.window_size = window_size
-        self.request_history: Dict[str, deque] = defaultdict(lambda: deque())
-
-    async def dispatch(self, request: Request, call_next) -> Response:
-        client_ip = request.client.host if request.client else "unknown"
-        current_time = time.time()
-
-        history = self.request_history[client_ip]
-        while history and current_time - history[0] > self.window_size:
-            history.popleft()
-
-        if len(history) >= self.requests_per_minute:
-            return JSONResponse(
-                status_code=429,
-                content={"detail": f"Rate limit exceeded. Max {self.requests_per_minute}/min."},
-            )
-
-        history.append(current_time)
-        response = await call_next(request)
-
-        # Headers informativos
-        response.headers["X-RateLimit-Limit"] = str(self.requests_per_minute)
-        response.headers["X-RateLimit-Remaining"] = str(
-            self.requests_per_minute - len(history)
-        )
-        return response
-```
-
-### Security Headers
-
-```python
-from fastapi import Request
-from starlette.middleware.base import BaseHTTPMiddleware
-
-
-class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    """Adiciona headers de segurança."""
-
-    async def dispatch(self, request: Request, call_next):
-        response = await call_next(request)
-
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["X-XSS-Protection"] = "1; mode=block"
-        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-
-        return response
-```
-
-### Aplicando Middleware
-
-```python
-from agno.os import AgentOS
-
-agent_os = AgentOS(agents=[agent])
-app = agent_os.get_app()
-
-# Adicionar middleware customizado
-app.add_middleware(RateLimitMiddleware, requests_per_minute=100)
-app.add_middleware(SecurityHeadersMiddleware)
-```
-
----
-
-## FastAPI Custom Integration
-
-### Preservar App Base
-
-```python
-from fastapi import FastAPI
-from agno.os import AgentOS
-
-# Sua app FastAPI existente
-my_app = FastAPI(title="My API")
-
-@my_app.get("/health")
-def health():
-    return {"status": "ok"}
-
-@my_app.get("/custom")
-def custom_endpoint():
-    return {"message": "Custom endpoint"}
-
-# Integrar com AgentOS
-agent_os = AgentOS(
-    agents=[agent],
-    app=my_app,
-    preserve_base_app=True,  # Mantém rotas da sua app
-)
-
-app = agent_os.get_app()
-# app agora tem /health, /custom E rotas do AgentOS
-```
-
-### Custom Routers
-
-```python
-from fastapi import APIRouter, FastAPI
-from agno.os import AgentOS
-
-# Router customizado
-custom_router = APIRouter(prefix="/api/v1")
-
-@custom_router.get("/status")
-def get_status():
-    return {"status": "running"}
-
-# App com router
-my_app = FastAPI()
-my_app.include_router(custom_router)
-
-# Integrar
-agent_os = AgentOS(agents=[agent], app=my_app)
-app = agent_os.get_app()
-```
-
-### Lifespan Events
+A aplicacao e criada diretamente via `FastAPI(...)` em `app/main.py`, com um `lifespan` context manager que gerencia startup e shutdown. Nao existe nenhum wrapper ou runtime intermediario.
 
 ```python
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    print("Starting up...")
-    await initialize_resources()
+    # Startup: conectar Redis, carregar prompts, setup tracing
+    setup_tracing(app)
+    get_langfuse()
+    await get_redis()
+    prompt = await get_prompt_manager().get_prompt()
 
     yield
 
-    # Shutdown
-    print("Shutting down...")
-    await cleanup_resources()
+    # Shutdown: aguardar requests, fechar conexoes
+    await shutdown_consolidation(timeout=5.0)
+    shutdown_tracing()
+    await close_redis()
+    langfuse_shutdown()
 
+custom_app = FastAPI(
+    title=settings.MODULE_DESCRIPTION,
+    version=settings.MODULE_VERSION,
+    lifespan=lifespan,
+)
 
-my_app = FastAPI(lifespan=lifespan)
-agent_os = AgentOS(agents=[agent], app=my_app)
+app = custom_app
+```
+
+### Principios da Arquitetura
+
+| Principio | Descricao |
+|-----------|-----------|
+| **Sem framework externo** | FastAPI puro com LiteLLM para chamadas LLM |
+| **Contrato AgentBench** | Endpoints padrao `/metadata`, `/run`, `/run_debug` |
+| **Soberania do modulo** | O modulo gerencia seu proprio pipeline, estado e contexto |
+| **Middlewares customizados** | JWT, rate limiting, seguranca e metricas implementados internamente |
+
+---
+
+## Middlewares
+
+Os middlewares sao aplicados em `app/main.py` na ordem inversa de execucao (o ultimo adicionado executa primeiro). A pilha completa:
+
+```python
+# 1. CORS (executa primeiro)
+app.add_middleware(CORSMiddleware, ...)
+
+# 2. Security Headers
+app.add_middleware(SecurityHeadersMiddleware)
+
+# 3. JWT Authentication
+app.add_middleware(JWTAuthMiddleware)
+
+# 4. Rate Limiting (Redis-backed)
+app.add_middleware(RedisRateLimitMiddleware, requests_per_minute=60)
+
+# 5. Metricas Prometheus
+app.add_middleware(MetricsMiddleware)
+
+# 6. Request ID (executa por ultimo, mais proximo da request)
+app.add_middleware(RequestIDMiddleware)
+```
+
+### RequestIDMiddleware
+
+Adiciona um ID unico a cada request para rastreabilidade. Aceita `X-Request-ID` do header ou gera um UUID.
+
+```python
+class RequestIDMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        request_id = request.headers.get('X-Request-ID') or str(uuid.uuid4())
+        request.state.request_id = request_id
+        token = request_id_var.set(request_id)
+        try:
+            response = await call_next(request)
+            response.headers['X-Request-ID'] = request_id
+            return response
+        finally:
+            request_id_var.reset(token)
+```
+
+**Arquivo**: `app/main.py`
+
+### JWTAuthMiddleware
+
+Autenticacao JWT customizada usando a biblioteca `pyjwt`. Valida tokens Bearer em todas as requests, exceto rotas publicas.
+
+```python
+class JWTAuthMiddleware(BaseHTTPMiddleware):
+    EXCLUDED_PATHS = [
+        '/', '/health', '/metrics', '/docs', '/redoc',
+        '/openapi.json', '/auth/login', '/auth/token',
+        '/prompt/webhook',
+    ]
+
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path in self.EXCLUDED_PATHS:
+            return await call_next(request)
+
+        if request.method == 'OPTIONS':
+            return await call_next(request)
+
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return JSONResponse(status_code=401, content={...})
+
+        token = auth_header.split(' ', 1)[1]
+        try:
+            payload = jwt.decode(
+                token, settings.JWT_SECRET,
+                algorithms=[settings.JWT_ALGORITHM],
+            )
+            request.state.user = payload
+        except jwt.ExpiredSignatureError:
+            return JSONResponse(status_code=401, ...)
+        except jwt.InvalidTokenError:
+            return JSONResponse(status_code=401, ...)
+
+        return await call_next(request)
+```
+
+**Arquivo**: `app/main.py`
+
+**Configuracao**:
+
+```bash
+AUTH_ENABLED=true
+JWT_SECRET=chave-secreta-forte-minimo-32-chars
+JWT_ALGORITHM=HS256
+JWT_EXPIRATION_HOURS=24
+```
+
+### SecurityHeadersMiddleware
+
+Adiciona headers de seguranca a todas as respostas: HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy.
+
+```python
+from app.security import SecurityHeadersMiddleware
+
+app.add_middleware(SecurityHeadersMiddleware)
+```
+
+Os headers adicionados incluem:
+
+| Header | Valor Padrao |
+|--------|-------------|
+| `Strict-Transport-Security` | `max-age=31536000; includeSubDomains` |
+| `Content-Security-Policy` | `default-src 'self'; script-src 'self'; ...` |
+| `X-Frame-Options` | `DENY` |
+| `X-Content-Type-Options` | `nosniff` |
+| `X-XSS-Protection` | `1; mode=block` |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` |
+| `Permissions-Policy` | `camera=(), microphone=(), geolocation=(), ...` |
+
+**Arquivo**: `app/security.py`
+
+### RedisRateLimitMiddleware
+
+Rate limiting com janela deslizante (sliding window), usando Redis como backend distribuido. Quando Redis nao esta disponivel, faz fallback para rate limiting em memoria.
+
+```python
+from app.rate_limiter import RateLimitMiddleware as RedisRateLimitMiddleware
+
+app.add_middleware(
+    RedisRateLimitMiddleware,
+    requests_per_minute=settings.RATE_LIMIT_REQUESTS_PER_MINUTE,
+)
+```
+
+Caracteristicas:
+
+- **Identificacao por usuario**: Extrai `sub` do token JWT para rate limit por usuario
+- **Fallback por IP**: Quando nao ha token, usa IP do cliente
+- **Headers informativos**: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`
+- **Rotas excluidas**: `/`, `/health`, `/docs`, `/openapi.json`, `/metrics`
+- **Audit logging**: Registra bloqueios por rate limit
+
+**Arquivo**: `app/rate_limiter.py`
+
+**Configuracao**:
+
+```bash
+RATE_LIMIT_ENABLED=true
+RATE_LIMIT_REQUESTS_PER_MINUTE=60
+```
+
+### MetricsMiddleware
+
+Coleta metricas HTTP para Prometheus: contagem de requests, latencia, requests em andamento.
+
+```python
+from app.metrics import MetricsMiddleware
+
+app.add_middleware(MetricsMiddleware)
+```
+
+**Arquivo**: `app/metrics.py`
+
+**Configuracao**:
+
+```bash
+METRICS_ENABLED=true
 ```
 
 ---
 
-## Referências
+## Ciclo de Vida (Lifespan)
 
-- [Agno HITL](https://docs.agno.com/agent-os/usage/hitl)
-- [Agno RBAC](https://docs.agno.com/agent-os/usage/rbac/basic)
-- [Agno Background Tasks](https://docs.agno.com/agent-os/usage/background-hooks-global)
-- [Agno Remote Execution](https://docs.agno.com/agent-os/usage/remote-execution/remote-agent)
-- [Agno MCP Server](https://docs.agno.com/agent-os/mcp/mcp)
-- [Agno Middleware](https://docs.agno.com/agent-os/middleware/custom)
+O `lifespan` context manager em `app/main.py` gerencia todo o ciclo de vida da aplicacao:
+
+### Startup
+
+1. Configuracao do OpenTelemetry tracing
+2. Inicializacao do Langfuse (observabilidade)
+3. Conexao com Redis (session state, cache, rate limiting)
+4. Pre-carregamento do prompt no cache
+
+### Shutdown (Graceful)
+
+1. Aguarda requests em andamento (ate `SHUTDOWN_TIMEOUT` segundos)
+2. Aguarda consolidacoes de memoria ativas
+3. Encerra tracing (flush de spans)
+4. Fecha conexoes Redis
+5. Shutdown do Langfuse
+
+```bash
+SHUTDOWN_TIMEOUT=30  # segundos
+```
+
+---
+
+## Endpoints
+
+### AgentBench (Contrato Padrao)
+
+| Endpoint | Metodo | Descricao |
+|----------|--------|-----------|
+| `/metadata` | GET | Capacidades e configuracao do modulo |
+| `/run` | POST | Execucao do agente em producao |
+| `/run_debug` | POST | Execucao com trajetoria completa para observabilidade |
+
+### Sistema
+
+| Endpoint | Metodo | Descricao |
+|----------|--------|-----------|
+| `/` | GET | Informacoes basicas do modulo |
+| `/health` | GET | Health check (verifica Redis) |
+| `/metrics` | GET | Metricas Prometheus |
+| `/profiling` | GET | Estatisticas de profiling async |
+
+### Autenticacao
+
+| Endpoint | Metodo | Descricao |
+|----------|--------|-----------|
+| `/auth/login` | POST | Login com usuario/senha, retorna JWT |
+| `/auth/token` | POST | Criacao programatica de tokens (requer scope admin) |
+
+### Gestao de Prompts
+
+| Endpoint | Metodo | Descricao |
+|----------|--------|-----------|
+| `/prompt/webhook` | POST | Webhook do Langfuse para atualizar prompts |
+| `/prompt/refresh` | POST | Forcar refresh do prompt |
+| `/prompt/current` | GET | Ver prompt atual em cache |
+
+---
+
+## Routers
+
+A aplicacao organiza endpoints em routers FastAPI:
+
+```python
+# AgentBench endpoints
+agentbench_router = APIRouter(tags=['AgentBench'])
+custom_app.include_router(agentbench_router)
+
+# Autenticacao
+auth_router = APIRouter(prefix='/auth', tags=['Authentication'])
+custom_app.include_router(auth_router)
+
+# Gestao de prompts
+prompt_router = APIRouter(prefix='/prompt', tags=['Prompt'])
+custom_app.include_router(prompt_router)
+
+# Sistema (health, metrics, root)
+system_router = APIRouter(tags=['System'])
+custom_app.include_router(system_router)
+```
+
+---
+
+## Autenticacao JWT
+
+### Fluxo de Login
+
+```
+POST /auth/login?username=admin&password=senha
+  -> Valida credenciais (bcrypt) contra AUTH_USERS
+  -> Gera token JWT com scopes ['agents:read', 'agents:run']
+  -> Retorna { access_token, token_type, expires_in }
+```
+
+### Criacao de Tokens (Admin)
+
+```
+POST /auth/token?user_id=novo_usuario&scopes=read,write
+  Authorization: Bearer <admin-token>
+  -> Verifica se o caller tem scope admin
+  -> Gera token para o usuario especificado
+  -> Registra audit log
+```
+
+### Configuracao de Usuarios
+
+```bash
+# Gerar hash bcrypt
+uv run scripts/hash_password.py --password minha_senha
+
+# Configurar usuarios no .env
+AUTH_USERS='{"admin": "$2b$12$hash_bcrypt_aqui"}'
+AUTH_ADMIN_SCOPES='["admin"]'
+```
+
+---
+
+## Funcionalidades que Requerem Implementacao Customizada
+
+Esta arquitetura e minimalista e extensivel. Algumas funcionalidades nao estao incluidas e precisariam de implementacao customizada:
+
+| Funcionalidade | Status | Como Implementar |
+|----------------|--------|-----------------|
+| **HITL (Human-in-the-Loop)** | Nao incluido | Criar tool que pausa execucao e aguarda input via webhook/polling |
+| **RBAC granular** | Parcial | JWT com scopes existe; adicionar verificacao de scopes por endpoint |
+| **Background Tasks** | Parcial | Usar `asyncio.create_task()` ou Celery para tarefas longas |
+| **Remote Execution** | Nao incluido | Criar cliente HTTP para chamar outros modulos via API |
+| **MCP Server** | Nao incluido | Implementar protocolo MCP como endpoints adicionais |
+| **A2A Protocol** | Nao incluido | Implementar protocolo Agent-to-Agent como endpoints |
+
+### Exemplo: Background Task Simples
+
+```python
+import asyncio
+from fastapi import BackgroundTasks
+
+@app.post("/processar")
+async def processar(background_tasks: BackgroundTasks):
+    background_tasks.add_task(tarefa_longa, dados)
+    return {"status": "processando"}
+
+async def tarefa_longa(dados):
+    # Processamento assincrono
+    await asyncio.sleep(10)
+    # Salvar resultado no Redis
+```
+
+### Exemplo: Verificacao de Scope por Endpoint
+
+```python
+from fastapi import Request, HTTPException
+
+def require_scope(request: Request, required: str):
+    """Verificar se o usuario tem o scope necessario."""
+    user = getattr(request.state, 'user', None)
+    if not user:
+        raise HTTPException(status_code=401)
+    scopes = user.get('scopes', [])
+    if required not in scopes and 'admin' not in scopes:
+        raise HTTPException(status_code=403, detail=f"Scope '{required}' necessario")
+
+@app.post("/admin/operacao")
+async def operacao_admin(request: Request):
+    require_scope(request, 'admin')
+    return {"resultado": "ok"}
+```
+
+---
+
+## Observabilidade
+
+### Metricas Prometheus (`/metrics`)
+
+```
+http_requests_total{method, path, status}
+http_request_duration_seconds{method, path}
+http_requests_in_progress
+agent_runs_total{status}
+agent_run_duration_seconds
+memory_consolidation_total{status}
+rate_limit_hits_total{client_type}
+circuit_breaker_state
+```
+
+### OpenTelemetry Tracing
+
+```python
+from app.tracing import create_span
+
+async def minha_funcao():
+    with create_span('operacao', {'user_id': uid}) as span:
+        resultado = await processar()
+        span.set_attribute('result_size', len(resultado))
+```
+
+### Audit Logging
+
+Operacoes sensiveis sao registradas via `app/audit.py`:
+
+- Login (sucesso/falha)
+- Execucao do agente (inicio/sucesso/falha)
+- Criacao de tokens
+- Bloqueios por rate limit
+- Acessos negados
+
+---
+
+## Arquivos Relevantes
+
+| Arquivo | Responsabilidade |
+|---------|-----------------|
+| `app/main.py` | Aplicacao FastAPI, middlewares, endpoints, lifespan |
+| `app/security.py` | SecurityHeadersMiddleware |
+| `app/rate_limiter.py` | RedisRateLimitMiddleware e RedisRateLimiter |
+| `app/metrics.py` | MetricsMiddleware e metricas Prometheus |
+| `app/auth.py` | Funcoes de autenticacao (bcrypt, scopes) |
+| `app/audit.py` | Audit logging para operacoes sensiveis |
+| `app/config.py` | Settings (pydantic-settings) |
+| `app/storage.py` | Redis (connection pool, session state, cache) |
+| `app/tracing.py` | OpenTelemetry distributed tracing |

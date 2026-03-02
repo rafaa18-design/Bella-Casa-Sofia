@@ -35,7 +35,7 @@ class InputItem(BaseModel):
 class RunRequest(BaseModel):
     """Request for /run and /run_debug endpoints."""
 
-    input: list[InputItem] = Field(..., min_length=1)
+    input: list[InputItem] = Field(..., min_length=1, max_length=20)
     conversation_id: str = Field(..., min_length=1)
     model: str | None = Field(None, description='Optional model override')
     received_at: float | None = Field(

@@ -1,251 +1,155 @@
 # Skills (Habilidades)
 
-Agno Skills, baseado na especificação [Agent Skills da Anthropic](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview), é uma forma de estender as capacidades do agente fornecendo habilidades específicas.
+Skills sao pacotes auto-contidos de capacidades que um agente pode usar para estender sua atuacao em dominios especificos. Uma skill agrupa instrucoes, tools e referencias relacionadas a uma competencia.
 
 ---
 
-## O que é uma Skill?
+## Abordagem
 
-Uma skill é um pacote auto-contido que um agente pode usar para estender suas capacidades em um domínio específico ou adquirir uma nova capacidade.
-
-### Componentes de uma Skill
-
-| Componente | Descrição |
-|------------|-----------|
-| **Instructions** | Orientações detalhadas em `SKILL.md` |
-| **Scripts** | Templates de código executável (opcional) |
-| **References** | Documentação de suporte (guias, exemplos) |
+Skills sao implementadas como **conjuntos especializados de tools** registrados condicionalmente no `get_tools_registry()` de `app/agent.py`.
 
 ---
 
-## Estrutura do SKILL.md
+## Como Implementar
 
-```markdown
----
-name: code-review
-description: Code review assistance with style checking and best practices
-license: Apache-2.0
-metadata:
-  version: "1.0.0"
-  author: your-name
-  tags: ["python", "code-quality"]
----
+### 1. Skill como Conjunto de Tools
 
-# Code Review Skill
-
-Use this skill when reviewing code for quality, style, and best practices.
-
-## When to Use
-
-- User asks for code review or feedback
-- User wants to improve code quality
-- User needs help with refactoring
-
-## Process
-
-1. **Analyze Structure**: Review overall code organization
-2. **Check Style**: Look for style guide violations
-3. **Identify Issues**: Find bugs, security issues, performance problems
-4. **Suggest Improvements**: Provide actionable recommendations
-
-## Best Practices
-
-- Focus on the most impactful issues first
-- Explain the "why" behind suggestions
-- Provide code examples for fixes
-```
-
----
-
-## Scripts Executáveis
-
-Scripts são templates de código que o agente pode executar.
-
-### Exemplo: Verificador de Estilo Python
+Cada skill e um modulo Python que exporta uma lista de tools relacionadas:
 
 ```python
-#!/usr/bin/env python3
-"""Check code style and return results."""
+# app/tools/skills/code_review.py
 
-import sys
+"""Skill: code-review -- Revisao de codigo com boas praticas."""
 
-def check_style(code: str) -> dict:
+from app.runtime import tool
+
+
+@tool
+def analisar_estrutura(codigo: str) -> str:
+    """Analisa a estrutura e organizacao do codigo."""
+    # Logica de analise
+    return f"Analise estrutural de {len(codigo)} caracteres concluida."
+
+
+@tool
+def verificar_estilo(codigo: str) -> str:
+    """Verifica conformidade com guia de estilo."""
     issues = []
-    lines = code.split('\n')
-
-    for i, line in enumerate(lines, 1):
+    for i, line in enumerate(codigo.split('\n'), 1):
         if len(line) > 100:
-            issues.append(f"Line {i}: exceeds 100 characters")
-        if line.endswith(' '):
-            issues.append(f"Line {i}: trailing whitespace")
+            issues.append(f"Linha {i}: excede 100 caracteres")
+    return f"Encontrados {len(issues)} problemas de estilo."
 
-    return {"issues": issues, "count": len(issues)}
 
-if __name__ == "__main__":
-    # Read code from stdin or argument
-    code = sys.stdin.read() if not sys.argv[1:] else sys.argv[1]
-    result = check_style(code)
-    print(result)
+# Exportar todas as tools da skill
+SKILL_TOOLS = [analisar_estrutura, verificar_estilo]
 ```
 
----
+### 2. Registro Condicional no Registry
 
-## Carregando Skills
-
-### LocalSkills (Diretório Local)
+Registre skills condicionalmente baseado em configuracao ou contexto:
 
 ```python
-from pathlib import Path
-from agno.agent import Agent
-from agno.models.openai import OpenAIChat
-from agno.skills import Skills, LocalSkills
+# app/agent.py
 
-# Diretório de skills relativo ao arquivo
-skills_dir = Path(__file__).parent / "skills"
-
-# Criar agente com skills
-agent = Agent(
-    name="Code Assistant",
-    model=OpenAIChat(id="gpt-4o"),
-    skills=Skills(loaders=[LocalSkills(str(skills_dir))]),
-    instructions=[
-        "You are a helpful coding assistant with access to specialized skills."
-    ],
-    markdown=True,
+from app.runtime import ToolRegistry
+from app.tools import (
+    listar_servicos,
+    verificar_disponibilidade,
+    # ... tools base
 )
 
-if __name__ == "__main__":
-    agent.print_response(
-        "Review this Python function:\n\n"
-        "def calc(x,y): return x+y"
-    )
+
+def get_tools_registry(skills: list[str] | None = None) -> ToolRegistry:
+    """Registra tools no ToolRegistry, incluindo skills opcionais."""
+    registry = ToolRegistry()
+
+    # Tools base (sempre disponiveis)
+    base_tools = [
+        listar_servicos,
+        verificar_disponibilidade,
+        # ...
+    ]
+    for t in base_tools:
+        registry.register(t)
+
+    # Skills opcionais
+    if skills and "code_review" in skills:
+        from app.tools.skills.code_review import SKILL_TOOLS
+        for t in SKILL_TOOLS:
+            registry.register(t)
+
+    if skills and "data_analysis" in skills:
+        from app.tools.skills.data_analysis import SKILL_TOOLS
+        for t in SKILL_TOOLS:
+            registry.register(t)
+
+    return registry
 ```
 
-### Com Instruções Customizadas
+### 3. Instrucoes da Skill no System Prompt
+
+Adicione instrucoes especificas da skill ao system prompt em `build_system_messages()`:
 
 ```python
-from agno.agent import Agent
-from agno.models.openai import OpenAIChat
-from agno.skills import Skills, LocalSkills
+# app/agent.py
 
-agent = Agent(
-    model=OpenAIChat(id="gpt-4o"),
-    skills=Skills(loaders=[LocalSkills("/path/to/skills")]),
-    instructions=[
-        "You have access to specialized skills.",
-        "Use get_skill_instructions to load full guidance when needed.",
-    ],
-)
-
-# O agente usará skills automaticamente quando relevante
-agent.print_response("Review this code for best practices: def foo(): pass")
-```
-
----
-
-## Skills Anthropic (Claude)
-
-Claude suporta skills nativas para geração de documentos.
-
-### Skills de Documentos
-
-```python
-from agno.agent import Agent
-from agno.models.anthropic import Claude
-
-# Agente com múltiplas skills de documentos
-agent = Agent(
-    name="Document Generator",
-    model=Claude(
-        id="claude-sonnet-4-20250514",
-        skills=[
-            {"type": "anthropic", "skill_id": "pptx", "version": "1.0"},
-            {"type": "anthropic", "skill_id": "xlsx", "version": "1.0"},
-            {"type": "anthropic", "skill_id": "docx", "version": "1.0"},
-            {"type": "anthropic", "skill_id": "pdf", "version": "1.0"},
-        ],
+SKILL_INSTRUCTIONS = {
+    "code_review": (
+        "Voce tem acesso a ferramentas de revisao de codigo. "
+        "Ao revisar codigo, analise estrutura primeiro, depois estilo."
     ),
-    instructions=[
-        "You can generate professional documents.",
-        "Create presentations, spreadsheets, and documents as needed.",
-    ],
-    markdown=True,
-)
+    "data_analysis": (
+        "Voce tem acesso a ferramentas de analise de dados. "
+        "Sempre apresente resultados com tabelas quando possivel."
+    ),
+}
+
+
+def build_system_messages(
+    instructions: str,
+    text_message: str,
+    images: list[dict] | None = None,
+    history: list[dict] | None = None,
+    active_skills: list[str] | None = None,
+) -> list[dict]:
+    """Build messages com instrucoes de skills injetadas."""
+
+    # Injetar instrucoes de skills ativas
+    if active_skills:
+        skill_text = "\n".join(
+            SKILL_INSTRUCTIONS[s] for s in active_skills
+            if s in SKILL_INSTRUCTIONS
+        )
+        instructions = f"{instructions}\n\n## Skills Ativas\n{skill_text}"
+
+    messages = [{"role": "system", "content": instructions}]
+    # ... resto da construcao de mensagens
+    return messages
 ```
 
-### Skills Disponíveis
+### 4. Estrutura de Diretorio Sugerida
 
-| Skill ID | Descrição |
-|----------|-----------|
-| `pptx` | Apresentações PowerPoint |
-| `xlsx` | Planilhas Excel |
-| `docx` | Documentos Word |
-| `pdf` | Documentos PDF |
-
----
-
-## Por que usar Skills?
-
-### Pacotes Reutilizáveis
-
-Crie skills uma vez, use em múltiplos agentes:
-
-```python
-# Uma skill de code review pode ser compartilhada entre:
-# - Agente de debugging
-# - Agente de PR review
-# - Agente de geração de código
-
-code_review_skill = LocalSkills("/skills/code-review")
-
-debugging_agent = Agent(
-    name="Debugger",
-    skills=Skills(loaders=[code_review_skill]),
-)
-
-pr_review_agent = Agent(
-    name="PR Reviewer",
-    skills=Skills(loaders=[code_review_skill]),
-)
 ```
-
-### Descoberta Gradual
-
-Agentes podem **descobrir, obter e utilizar** conhecimento especializado gradualmente:
-
-```python
-agent = Agent(
-    skills=Skills(loaders=[LocalSkills("/skills")]),
-    instructions=[
-        "You have access to specialized skills.",
-        "Discover and use relevant skills as needed.",
-    ],
-)
+app/tools/
+├── __init__.py              # Tools base + exports
+├── _helpers.py
+├── _mock_data.py
+├── obter_data_hora.py
+├── salvar_dados_cliente.py
+└── skills/                  # Skills opcionais
+    ├── __init__.py
+    ├── code_review.py       # Skill: revisao de codigo
+    └── data_analysis.py     # Skill: analise de dados
 ```
 
 ---
 
-## Estrutura de Diretório de Skills
+## Resumo
 
-```
-skills/
-├── code-review/
-│   ├── SKILL.md           # Instruções principais
-│   ├── scripts/
-│   │   └── check_style.py # Scripts executáveis
-│   └── references/
-│       └── style_guide.md # Documentação de suporte
-├── data-analysis/
-│   ├── SKILL.md
-│   └── scripts/
-│       └── analyze.py
-└── documentation/
-    └── SKILL.md
-```
-
----
-
-## Referências
-
-- [Agno Skills](https://docs.agno.com/basics/skills/overview)
-- [Anthropic Agent Skills](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview)
+| Componente | Descricao |
+|------------|-----------|
+| Modulos de skill | Modulos Python com `SKILL_TOOLS` list |
+| Instrucoes de skill | Dicionario `SKILL_INSTRUCTIONS` injetado no system prompt |
+| Registro condicional | `get_tools_registry(skills=[...])` registra tools conforme necessidade |
+| Tools da skill | Tools com `@tool` decorator em `app/runtime` |

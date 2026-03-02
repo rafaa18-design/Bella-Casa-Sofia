@@ -1,16 +1,17 @@
 # Asani AI Agent Template
 
-Template de módulo de agente de IA seguindo o padrão **AgentBench** (contrato interno Asani) e usando o framework **Agno**.
+Template de módulo de agente de IA seguindo o padrão **AgentBench** (contrato interno Asani) com **LiteLLM** + agent loop próprio.
 
 ## Visão Geral
 
 Este template implementa um módulo de IA compatível com:
 
 - **AgentBench Standard**: Endpoints `/metadata`, `/run`, `/run_debug`
-- **Agno Framework**: Framework Python para agentes multi-modais
-- **AgentOS**: Runtime de produção do Agno
-- **Autenticação JWT**: Middleware com rotas excludas configuráveis
-- **Multi-Provider**: Suporte a Anthropic, OpenAI e Vertex AI
+- **LiteLLM**: Abstração multi-provider para chamadas LLM (Anthropic, OpenAI, Vertex AI)
+- **Agent Loop Próprio**: Loop iterativo de tool-calling sem framework externo
+- **Memória Consolidada**: Sistema LLM-driven de consolidação de memória de longo prazo
+- **Autenticação JWT**: Middleware customizado com rotas excluídas configuráveis
+- **Multi-Provider**: Suporte a Anthropic, OpenAI e Vertex AI via litellm
 
 ### Princípios Chave
 
@@ -26,29 +27,57 @@ Este template implementa um módulo de IA compatível com:
 ```
 asani-ai-agent-template/
 ├── app/
-│   ├── main.py              # FastAPI + endpoints AgentBench
-│   ├── agent.py             # Configuração do agente Agno
+│   ├── main.py              # FastAPI app, lifespan, middleware/router registration (~150 linhas)
+│   ├── agent.py             # Utilitários litellm + agent loop iterativo
+│   ├── runtime.py           # RunContext, @tool decorator, ToolRegistry, exceptions
+│   ├── middleware.py         # RequestID, JWT auth e security headers middlewares
+│   ├── observability.py     # Logging estruturado, OpenTelemetry tracing, Langfuse client
+│   ├── memory.py            # Consolidação LLM-driven de memória
 │   ├── auth.py              # Autenticação JWT + bcrypt
 │   ├── audit.py             # Audit logging para operações sensíveis
 │   ├── models.py            # Schemas Pydantic
-│   ├── storage.py           # Redis & PostgreSQL (com pooling)
+│   ├── storage.py           # Redis (session state, histórico, cache)
 │   ├── config.py            # Settings
-│   ├── security.py          # Security headers middleware
-│   ├── langfuse_client.py   # Observabilidade Langfuse
 │   ├── metrics.py           # Métricas Prometheus
-│   ├── tracing.py           # OpenTelemetry tracing
 │   ├── profiling.py         # Async profiling utilities
 │   ├── rate_limiter.py      # Rate limiting (Redis/in-memory)
 │   ├── resilience.py        # Circuit breaker + retry
-│   ├── logging_config.py    # Logging estruturado (JSON/text)
 │   ├── prompt_manager.py    # Gestão de prompts (Langfuse)
-│   └── tools/               # Ferramentas customizadas
-│       └── __init__.py
+│   ├── routes/              # Endpoints organizados por domínio
+│   │   ├── __init__.py
+│   │   ├── agentbench.py    # /metadata, /run, /run_debug
+│   │   ├── auth.py          # /auth/login, /auth/token
+│   │   ├── prompts.py       # /prompt/webhook, /prompt/refresh, /prompt/current
+│   │   └── system.py        # /health, /metrics, /profiling, /
+│   └── tools/               # Ferramentas agrupadas por domínio
+│       ├── __init__.py
+│       ├── _helpers.py
+│       ├── _mock_data.py
+│       ├── consultas.py     # agendar, cancelar, verificar disponibilidade
+│       ├── pacientes.py     # buscar, histórico, verificar cliente, convênios
+│       ├── catalogo.py      # listar serviços, calcular orçamento, obter data/hora
+│       ├── sessao.py        # salvar dados, salvar preferências, ver contexto
+│       └── formatar_contexto.py  # Formatador de contexto (não é tool)
 ├── scripts/
 │   └── hash_password.py     # CLI para gerar hashes bcrypt
 ├── docs/                    # Documentação detalhada
 ├── tests/                   # Testes unitários
 └── CLAUDE.md                # Este arquivo
+```
+
+## Arquitetura do Agent Loop
+
+```
+Request → parse_multimodal_input()
+       → build_system_messages(instructions, text, images, history)
+       → run_agent_loop(messages, tools, run_context, model)
+           ├── litellm.acompletion() → tool_calls?
+           │   ├── Yes → ToolRegistry.execute() → add tool results → repeat
+           │   └── No  → return AgentResponse(content, tokens, tools_used)
+           ├── RetryAgentRun → feedback como tool result, continua loop
+           └── StopAgentRun → para loop imediatamente
+       → Memory consolidation (background, se MEMORY_WINDOW atingido)
+       → Return RunResponse
 ```
 
 ## Comandos Rápidos
@@ -62,79 +91,17 @@ uv run scripts/hash_password.py          # Gerar hash bcrypt
 make dev                                 # Docker dev
 ```
 
-## Documentação
-
-A documentação detalhada está organizada em `docs/`. **Leia o arquivo apropriado para cada contexto:**
-
-### Documentação Principal
-
-| Arquivo | Quando Ler |
-|---------|------------|
-| [docs/agentbench.md](docs/agentbench.md) | Entender o contrato AgentBench, endpoints `/metadata`, `/run`, `/run_debug` |
-| [docs/prompts.md](docs/prompts.md) | Escrever system prompts eficazes, seções obrigatórias, frameworks (TIDD-EC, RISEN), anti-padrões, otimização iterativa |
-| [docs/tools.md](docs/tools.md) | Criar ferramentas, structured output, JSON mode, error handling, hooks em tools |
-| [docs/agente.md](docs/agente.md) | Configurar o agente, modelos, providers (Anthropic, OpenAI, Vertex AI), input/output multimodal |
-| [docs/storage.md](docs/storage.md) | Session state, memórias, histórico, backends (PostgreSQL, SQLite) |
-| [docs/desenvolvimento.md](docs/desenvolvimento.md) | Testes, debugging, Langfuse, troubleshooting, padrões de arquitetura |
-| [docs/deploy.md](docs/deploy.md) | Deploy, Docker, segurança, variáveis de ambiente |
-
-### Estado, Dados e Memória
-
-| Arquivo | Quando Ler |
-|---------|------------|
-| [docs/state.md](docs/state.md) | Session state, gerenciamento de estado entre execuções, múltiplos usuários |
-| [docs/memory.md](docs/memory.md) | User memories, agentic memory, session summaries, MemoryTools |
-| [docs/input-output.md](docs/input-output.md) | Validação de entrada/saída com Pydantic, structured outputs, JSON mode |
-
-### Recursos Avançados
-
-| Arquivo | Quando Ler |
-|---------|------------|
-| [docs/knowledge.md](docs/knowledge.md) | RAG, Knowledge Bases, Embedders (OpenAI, Cohere, Google, Ollama), PgVector |
-| [docs/teams.md](docs/teams.md) | Multi-Agent Teams (COORDINATE, ROUTE, COLLABORATE) |
-| [docs/workflows.md](docs/workflows.md) | Workflows com Steps, Conditions, executores customizados |
-| [docs/hooks.md](docs/hooks.md) | Pre/post hooks, tool_hooks, modificação de contexto |
-| [docs/reasoning.md](docs/reasoning.md) | Chain-of-thought, ReasoningTools, Extended Thinking (Claude) |
-| [docs/guardrails.md](docs/guardrails.md) | Moderação, validação de input/output, guardrails customizados |
-| [docs/few-shot.md](docs/few-shot.md) | Few-shot learning com exemplos de conversação |
-| [docs/dependencies.md](docs/dependencies.md) | Injeção de dependências via RunContext |
-
-### Multimodal e Streaming
-
-| Arquivo | Quando Ler |
-|---------|------------|
-| [docs/multimodal.md](docs/multimodal.md) | Imagens, áudio, vídeo - input/output multimodal |
-| [docs/streaming.md](docs/streaming.md) | Streaming de respostas, eventos (RunEvent, TeamRunEvent) |
-| [docs/async.md](docs/async.md) | Execução assíncrona, FastAPI integration |
-
-### Personalização e Extensões
-
-| Arquivo | Quando Ler |
-|---------|------------|
-| [docs/culture.md](docs/culture.md) | Personalidade do agente, instructions, estilos de comunicação |
-| [docs/skills.md](docs/skills.md) | Skills (SKILL.md, scripts, LocalSkills), skills Anthropic |
-
-### Observabilidade e Integrações
-
-| Arquivo | Quando Ler |
-|---------|------------|
-| [docs/observability.md](docs/observability.md) | Debug mode, OpenTelemetry, Langfuse, LangSmith, caching |
-| [docs/integracao.md](docs/integracao.md) | MCP Tools, Evals, A2A Protocol |
-| [docs/agentos.md](docs/agentos.md) | HITL, RBAC, Background Tasks, Remote Execution, MCP Server, Middleware |
-| [docs/clients.md](docs/clients.md) | AgentOSClient (REST), A2AClient (protocolo A2A) |
-
 ## Guia Rápido por Tarefa
 
 ### Criar uma nova ferramenta (tool)
 
-Leia [docs/tools.md](docs/tools.md). Cada tool fica em seu próprio arquivo:
+Tools são agrupadas por domínio em arquivos dentro de `app/tools/`. Adicione ao arquivo de domínio adequado ou crie um novo se necessário:
 
-1. Crie `app/tools/minha_tool.py`:
+1. Adicione a tool ao arquivo de domínio (ex: `app/tools/consultas.py`):
 
 ```python
 """Tool: minha_tool — Descrição breve."""
-from agno.tools import tool
-from agno.exceptions import RetryAgentRun
+from app.runtime import tool, RetryAgentRun
 
 @tool
 def minha_tool(parametro: str) -> str:
@@ -144,148 +111,96 @@ def minha_tool(parametro: str) -> str:
     return resultado
 ```
 
-2. Registre em `app/tools/__init__.py` (re-export) e em `app/agent.py` na lista `tools=[]`.
+Se precisar de acesso ao estado da sessão, use `RunContext`:
 
-> **⚠️ Dados mockados (`_mock_data.py`) são APENAS para desenvolvimento.**
+```python
+from app.runtime import tool, RunContext
+
+@tool
+def minha_tool(run_context: RunContext, dados: str) -> str:
+    """Tool que acessa session state."""
+    run_context.session_state['chave'] = dados
+    return "Dados salvos"
+```
+
+2. Registre em `app/tools/__init__.py` (re-export) e em `app/agent.py` na lista dentro de `get_tools_registry()`.
+
+> **Dados mockados (`_mock_data.py`) são APENAS para desenvolvimento.**
 > Em produção, substitua por integrações reais (APIs, banco de dados, serviços externos).
 
 ### Modificar configuração do agente
 
-Leia [docs/agente.md](docs/agente.md). Edite `app/agent.py`:
+Edite `app/agent.py`:
 
 ```python
-def create_agent(...) -> Agent:
-    return Agent(
-        model=get_model(model_id),
-        tools=[...],
-        instructions=instructions,
-        # Adicione/modifique configurações aqui
-    )
+# Modelo litellm (multi-provider)
+def get_litellm_model(model_id: str) -> str:
+    # Retorna "anthropic/claude-...", "openai/gpt-...", "vertex_ai/..."
+
+# Registro de tools
+def get_tools_registry() -> ToolRegistry:
+    # Adicione/remova tools aqui
+
+# Construção de messages
+def build_system_messages(instructions, text, images, history) -> list[dict]:
+    # System prompt + conversation history + user message
 ```
 
-### Adicionar novo endpoint
+### Gerenciar memória de longo prazo
 
-Edite `app/main.py`. Siga o padrão AgentBench documentado em [docs/agentbench.md](docs/agentbench.md).
+O sistema usa **consolidação LLM-driven** (arquivo `app/memory.py`):
 
-### Configurar storage/memória
+1. A cada mensagem, incrementa um contador `unconsolidated`
+2. Quando `unconsolidated >= MEMORY_WINDOW`, um LLM mais barato consolida o histórico em fatos estruturados
+3. Fatos são armazenados no Redis (`memory:{cid}:facts`) e injetados no system prompt
 
-Leia [docs/storage.md](docs/storage.md). Configure em `app/storage.py` e habilite no agente:
-
-```python
-agent = Agent(
-    db=get_postgres_db(),
-    enable_user_memories=True,
-    add_history_to_context=True,
-)
+Configuração via `.env`:
+```bash
+MEMORY_CONSOLIDATION_ENABLED=true
+MEMORY_WINDOW=20
+MEMORY_CONSOLIDATION_MODEL=claude-haiku-4-5-20251001  # Modelo barato
+MEMORY_CONSOLIDATION_MAX_TOKENS=1024
 ```
 
-### Gerenciar dados que devem ser lembrados (contexto pequeno)
+### Gerenciar dados da sessão (contexto pequeno)
 
-Leia [docs/state.md](docs/state.md) seção "Memória Persistente com Contexto Pequeno".
+**Problema**: O agente pode esquecer dados de turnos anteriores.
 
-**Problema**: Com `NUM_HISTORY_RUNS=3`, o agente esquece o que foi dito nos primeiros turnos.
+**Solução**: Tools de memória salvam dados no `session_state`, que é injetado no system prompt:
 
-**Solução em 3 partes**:
-
-1. **Tools de memória** — O agente salva dados no session_state via tools:
 ```python
-# Dados permanentes do cliente (nome, CPF, convênio)
+# Tools disponíveis:
 salvar_dados_cliente(run_context, nome="João", convenio="OdontoPrev")
-
-# Preferências temporárias (horários, dentista, alergias)
 salvar_preferencias(run_context, chave="horario_preferido", valor="manhã")
-
-# Consultar dados salvos
 ver_contexto_sessao(run_context)
 ```
 
-2. **Injeção de contexto** — Em `app/main.py`, antes de criar o agente:
-```python
-from app.tools import formatar_contexto_state
+O contexto é automaticamente formatado e injetado via `formatar_contexto_completo()`.
 
-state_context = formatar_contexto_state(session_state)
-if state_context:
-    instructions = instructions + state_context
-```
-Isso adiciona às instructions:
-```
---- CONTEXTO DA SESSÃO (dados já coletados, NÃO pergunte novamente) ---
-DADOS DO CLIENTE ATUAL: nome: João | convenio: OdontoPrev
-PREFERÊNCIAS DO CLIENTE: horario_preferido: manhã
---- FIM DO CONTEXTO ---
-```
+### Adicionar novo endpoint
 
-3. **Instruções no prompt** — O prompt do agente DEVE instruir a usar as tools:
-```
-GESTÃO DE MEMÓRIA (CRÍTICO):
-- SEMPRE use salvar_dados_cliente quando o paciente informar dados pessoais
-- SEMPRE use salvar_preferencias para horários, alergias, observações
-- Se o CONTEXTO DA SESSÃO estiver presente, NÃO pergunte novamente
-```
-
-**Arquivos envolvidos**: `app/tools/__init__.py` (tools + `formatar_contexto_state`), `app/main.py` (injeção), `.env` (prompt)
-
-### Implementar RAG/Knowledge
-
-Leia [docs/knowledge.md](docs/knowledge.md) para Knowledge Bases, RAG e Embedders.
-
-### Criar time de agentes
-
-Leia [docs/teams.md](docs/teams.md) para configurar Multi-Agent Teams.
-
-### Human-in-the-Loop (HITL)
-
-Leia [docs/agentos.md](docs/agentos.md) seção "Human-in-the-Loop".
-
-### Configurar RBAC/Autenticação
-
-Leia [docs/agentos.md](docs/agentos.md) seção "RBAC".
-
-### Gerenciar estado entre execuções
-
-Leia [docs/state.md](docs/state.md) para session state e persistência.
-
-### Processar imagens/áudio/vídeo
-
-Leia [docs/multimodal.md](docs/multimodal.md) para input multimodal.
-
-### Validar entrada/saída
-
-Leia [docs/input-output.md](docs/input-output.md) para schemas Pydantic.
-
-### Implementar streaming
-
-Leia [docs/streaming.md](docs/streaming.md) para eventos e streaming.
-
-### Configurar observabilidade
-
-Leia [docs/observability.md](docs/observability.md) para tracing e debug.
-
-### Resolver problemas
-
-Leia [docs/desenvolvimento.md](docs/desenvolvimento.md) seção "Troubleshooting".
-
-### Preparar para produção
-
-Leia [docs/deploy.md](docs/deploy.md).
+Edite `app/main.py`. Siga o padrão AgentBench.
 
 ## Arquivos Importantes
 
 | Arquivo | Propósito |
 |---------|-----------|
-| `app/main.py` | Endpoints FastAPI, middlewares, lifespan |
-| `app/agent.py` | Factory do agente Agno |
+| `app/main.py` | FastAPI app, lifespan, middleware/router registration |
+| `app/agent.py` | Utilitários litellm + agent loop iterativo com tool-calling |
+| `app/runtime.py` | RunContext, @tool, ToolRegistry, RetryAgentRun, StopAgentRun |
+| `app/middleware.py` | RequestID, JWT auth e security headers middlewares |
+| `app/observability.py` | Logging estruturado, OpenTelemetry tracing, Langfuse client |
+| `app/memory.py` | Consolidação LLM-driven de memória |
 | `app/auth.py` | Autenticação JWT com bcrypt |
-| `app/tools/__init__.py` | Definição de ferramentas |
+| `app/routes/` | Endpoints organizados: agentbench, auth, prompts, system |
+| `app/tools/__init__.py` | Definição e export de ferramentas |
 | `app/models.py` | Schemas Pydantic para AgentBench |
 | `app/config.py` | Configurações (pydantic-settings) |
+| `app/storage.py` | Redis (session state, histórico, cache) |
 | `app/metrics.py` | Métricas Prometheus |
-| `app/tracing.py` | OpenTelemetry distributed tracing |
 | `app/rate_limiter.py` | Rate limiting com Redis |
 | `app/resilience.py` | Circuit breaker e retry |
 | `scripts/hash_password.py` | CLI para bcrypt |
-| `.env` | Variáveis de ambiente locais |
-| `PADRAO_AGENT_BENCH.md` | Especificação completa AgentBench |
 
 ## Variáveis de Ambiente Essenciais
 
@@ -299,7 +214,6 @@ ANTHROPIC_API_KEY=sk-ant-...  # ou OPENAI_API_KEY
 
 # Storage
 REDIS_URL=redis://localhost:6379/0
-POSTGRES_URL=postgresql+psycopg://user:pass@localhost:5432/agentdb
 
 # Autenticação
 AUTH_ENABLED=true
@@ -309,10 +223,13 @@ AUTH_USERS='{"admin": "$2b$12$..."}'  # Use bcrypt! Gerar: uv run scripts/hash_p
 # CORS - Configure origens específicas para produção
 CORS_ORIGINS='["https://app.example.com"]'
 
+# Memória Consolidada
+MEMORY_CONSOLIDATION_ENABLED=true
+MEMORY_WINDOW=20
+MEMORY_CONSOLIDATION_MODEL=claude-haiku-4-5-20251001
+
 # Observabilidade
-METRICS_ENABLED=true                    # Prometheus em /metrics
-OTEL_ENABLED=false                      # OpenTelemetry tracing
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+METRICS_ENABLED=true
 LANGFUSE_ENABLED=true
 LANGFUSE_PUBLIC_KEY=pk-...
 LANGFUSE_SECRET_KEY=sk-...
@@ -329,39 +246,12 @@ SHUTDOWN_TIMEOUT=30
 
 ## Padrões do Projeto
 
-- **Error Handling**: Use `RetryAgentRun` para feedback ao modelo, `StopAgentRun` para parar execução
-- **Tools**: Sempre com docstrings descritivas, validação de inputs
-- **Storage**: PostgreSQL em produção, Redis para cache e rate limiting (com connection pooling)
+- **Error Handling**: Use `RetryAgentRun` para feedback ao modelo, `StopAgentRun` para parar execução (ambos em `app.runtime`)
+- **Tools**: Sempre com docstrings descritivas, validação de inputs, decorator `@tool` de `app.runtime`
+- **Storage**: Redis para session state, histórico e cache (com connection pooling)
 - **Auth**: JWT obrigatório em todos os endpoints exceto `/health`, `/auth/login`, `/metrics`
 - **Segurança**: Security headers (HSTS, CSP, X-Frame-Options), bcrypt para senhas, CORS específico
 - **Observabilidade**: Métricas Prometheus, tracing OpenTelemetry, logs estruturados, audit logging
-
-## Segurança
-
-### Security Headers
-
-Headers de segurança são adicionados automaticamente a todas as respostas:
-
-- `Strict-Transport-Security` (HSTS)
-- `Content-Security-Policy` (CSP)
-- `X-Frame-Options: DENY`
-- `X-Content-Type-Options: nosniff`
-- `Referrer-Policy: strict-origin-when-cross-origin`
-- `Permissions-Policy`
-
-### Audit Logging
-
-Operações sensíveis são registradas automaticamente:
-
-```python
-from app.audit import audit_login_success, audit_agent_run_start
-
-# Eventos registrados automaticamente:
-# - auth.login.success / auth.login.failure
-# - auth.token.created
-# - auth.rate_limited
-# - agent.run.start / agent.run.success / agent.run.failure
-```
 
 ## Observabilidade
 
@@ -374,6 +264,8 @@ from app.audit import audit_login_success, audit_agent_run_start
 # - http_requests_in_progress: Requisições em andamento
 # - agent_runs_total: Execuções do agente por status
 # - agent_run_duration_seconds: Duração das execuções
+# - memory_consolidation_total: Consolidações por status (scheduled/completed/failed)
+# - memory_consolidation_duration_seconds: Latência da consolidação
 # - rate_limit_hits_total: Requisições bloqueadas por rate limit
 # - circuit_breaker_state: Estado do circuit breaker (0=closed, 1=open, 2=half-open)
 ```
@@ -381,102 +273,12 @@ from app.audit import audit_login_success, audit_agent_run_start
 ### OpenTelemetry Tracing
 
 ```python
-# app/tracing.py
-from app.tracing import create_span, get_current_trace_id
+from app.observability import setup_tracing  # Tracing setup is in observability module
 
 async def minha_funcao():
     with create_span('operacao', {'user_id': user_id}) as span:
         result = await processar()
         span.set_attribute('result_size', len(result))
-```
-
-### Logging Estruturado
-
-```python
-# Formato JSON em produção (LOG_FORMAT=json)
-# Formato texto em desenvolvimento (LOG_FORMAT=text)
-# Request ID automático em todas as requisições (X-Request-ID)
-```
-
-## Resiliência
-
-### Circuit Breaker
-
-```python
-from app.resilience import get_circuit_breaker
-
-cb = get_circuit_breaker('external-api')
-if cb.can_execute():
-    try:
-        result = await call_external_api()
-        cb.record_success()
-    except Exception as e:
-        cb.record_failure()
-        raise
-```
-
-### Retry com Backoff
-
-```python
-from app.resilience import retry_with_backoff
-
-result = await retry_with_backoff(
-    funcao_que_pode_falhar,
-    arg1, arg2,
-    max_attempts=3,
-    min_wait=1.0,
-    max_wait=10.0,
-)
-```
-
-## Rate Limiting
-
-- Redis-backed com fallback para in-memory
-- Sliding window algorithm
-- Headers X-RateLimit-* em todas as respostas
-- Configurável via `RATE_LIMIT_REQUESTS_PER_MINUTE`
-
-## Graceful Shutdown
-
-- Aguarda requisições em andamento (até SHUTDOWN_TIMEOUT segundos)
-- Fecha conexões Redis e PostgreSQL
-- Flush de traces e métricas
-
-## Async Profiling
-
-Profile operações async para identificar gargalos:
-
-```python
-from app.profiling import profile_async, profile_async_function, get_profiler
-
-# Context manager
-async with profile_async('database_query', log_slow_threshold_ms=100):
-    result = await db.query(...)
-
-# Decorator
-@profile_async_function(log_slow_threshold_ms=200)
-async def slow_operation():
-    ...
-
-# Ver estatísticas
-profiler = get_profiler()
-stats = profiler.get_all_stats()  # Ou via GET /profiling
-```
-
-## Connection Pooling
-
-Redis e PostgreSQL usam connection pooling configurável:
-
-```bash
-# Redis Pool
-REDIS_POOL_MIN_SIZE=5
-REDIS_POOL_MAX_SIZE=20
-REDIS_CONNECT_TIMEOUT=5.0
-
-# PostgreSQL Pool
-POSTGRES_POOL_SIZE=5
-POSTGRES_POOL_MAX_OVERFLOW=10
-POSTGRES_POOL_TIMEOUT=30.0
 ```
 
 ## API Endpoints
@@ -493,7 +295,7 @@ POSTGRES_POOL_TIMEOUT=30.0
 
 | Endpoint | Método | Descrição |
 |----------|--------|-----------|
-| `/health` | GET | Health check (inclui status Redis/PostgreSQL) |
+| `/health` | GET | Health check (Redis) |
 | `/metrics` | GET | Métricas Prometheus |
 | `/profiling` | GET | Estatísticas de profiling async |
 | `/` | GET | Informações básicas do módulo |
@@ -518,24 +320,10 @@ POSTGRES_POOL_TIMEOUT=30.0
 ### Gerar Hash Bcrypt
 
 ```bash
-# Interativo (com confirmação)
-uv run scripts/hash_password.py
-
-# Com senha direta
-uv run scripts/hash_password.py --password minha_senha
-
-# Output JSON para .env
-uv run scripts/hash_password.py --password minha_senha --json --username admin
-
-# Verificar senha
-uv run scripts/hash_password.py --verify '$2b$12$...' --password minha_senha
-```
-
-### Configurar Usuários
-
-```bash
-# Em .env (use hashes bcrypt em produção!)
-AUTH_USERS='{"admin": "$2b$12$xxxxx", "user": "$2b$12$yyyyy"}'
+uv run scripts/hash_password.py                          # Interativo
+uv run scripts/hash_password.py --password minha_senha    # Direto
+uv run scripts/hash_password.py --password minha_senha --json --username admin  # JSON
+uv run scripts/hash_password.py --verify '$2b$12$...' --password minha_senha    # Verificar
 ```
 
 ### Uso da API
@@ -551,3 +339,10 @@ curl -H "Authorization: Bearer <token>" http://localhost:8000/metadata
 curl -H "Authorization: Bearer <admin-token>" \
   -X POST "http://localhost:8000/auth/token?user_id=new_user&scopes=read,write"
 ```
+
+## Graceful Shutdown
+
+- Aguarda requisições em andamento (até SHUTDOWN_TIMEOUT segundos)
+- Aguarda consolidações de memória ativas
+- Fecha conexões Redis
+- Flush de traces e métricas

@@ -94,6 +94,19 @@ REDIS_OPERATIONS = Counter(
     ['operation', 'status'],  # status: success/failure/fallback
 )
 
+# Memory consolidation metrics
+CONSOLIDATION_COUNT = Counter(
+    'memory_consolidation_total',
+    'Total memory consolidation runs',
+    ['status'],  # scheduled/completed/failed
+)
+
+CONSOLIDATION_LATENCY = Histogram(
+    'memory_consolidation_duration_seconds',
+    'Memory consolidation latency in seconds',
+    buckets=[0.5, 1.0, 2.5, 5.0, 10.0, 30.0],
+)
+
 # Authentication metrics
 AUTH_ATTEMPTS = Counter(
     'auth_attempts_total',
@@ -227,6 +240,18 @@ def record_redis_operation(operation: str, status: str):
         status: Operation status (success/failure/fallback).
     """
     REDIS_OPERATIONS.labels(operation=operation, status=status).inc()
+
+
+def record_consolidation(status: str, duration_seconds: float = 0.0):
+    """Record a memory consolidation event.
+
+    Args:
+        status: Consolidation status (scheduled/completed/failed).
+        duration_seconds: Duration in seconds (for completed runs).
+    """
+    CONSOLIDATION_COUNT.labels(status=status).inc()
+    if duration_seconds > 0:
+        CONSOLIDATION_LATENCY.observe(duration_seconds)
 
 
 def record_auth_attempt(status: str):

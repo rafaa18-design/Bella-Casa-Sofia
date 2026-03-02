@@ -1,17 +1,109 @@
-"""Security middleware and utilities.
+"""HTTP middlewares: request ID, JWT auth, and security headers.
 
-Provides security headers middleware and other security-related functionality.
+Consolidates:
+- RequestIDMiddleware (request tracing)
+- JWTAuthMiddleware (JWT authentication)
+- SecurityHeadersMiddleware (security response headers)
 """
 
 import logging
+import uuid
 
+import jwt
 from fastapi import Request
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
 from app.config import settings
+from app.observability import request_id_var
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Request ID Middleware
+# ---------------------------------------------------------------------------
+
+
+class RequestIDMiddleware(BaseHTTPMiddleware):
+    """Middleware to add request ID to all requests for tracing."""
+
+    async def dispatch(self, request: Request, call_next):
+        request_id = request.headers.get('X-Request-ID') or str(uuid.uuid4())
+        request.state.request_id = request_id
+
+        # Set request ID in context var for logging
+        token = request_id_var.set(request_id)
+        try:
+            response = await call_next(request)
+            response.headers['X-Request-ID'] = request_id
+            return response
+        finally:
+            request_id_var.reset(token)
+
+
+# ---------------------------------------------------------------------------
+# JWT Authentication Middleware
+# ---------------------------------------------------------------------------
+
+
+class JWTAuthMiddleware(BaseHTTPMiddleware):
+    """JWT authentication middleware using pyjwt."""
+
+    EXCLUDED_PATHS = [
+        '/',
+        '/health',
+        '/metrics',
+        '/docs',
+        '/redoc',
+        '/openapi.json',
+        '/auth/login',
+        '/auth/token',
+        '/prompt/webhook',
+    ]
+
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path in self.EXCLUDED_PATHS:
+            return await call_next(request)
+
+        # Skip OPTIONS (CORS preflight)
+        if request.method == 'OPTIONS':
+            return await call_next(request)
+
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return JSONResponse(
+                status_code=401,
+                content={'detail': 'Missing or invalid Authorization header'},
+            )
+
+        token = auth_header.split(' ', 1)[1]
+        try:
+            payload = jwt.decode(
+                token,
+                settings.JWT_SECRET,
+                algorithms=[settings.JWT_ALGORITHM],
+            )
+            # Store decoded payload in request state for downstream use
+            request.state.user = payload
+        except jwt.ExpiredSignatureError:
+            return JSONResponse(
+                status_code=401,
+                content={'detail': 'Token has expired'},
+            )
+        except jwt.InvalidTokenError as e:
+            return JSONResponse(
+                status_code=401,
+                content={'detail': f'Invalid token: {e}'},
+            )
+
+        return await call_next(request)
+
+
+# ---------------------------------------------------------------------------
+# Security Headers Middleware
+# ---------------------------------------------------------------------------
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):

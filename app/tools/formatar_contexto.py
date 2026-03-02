@@ -54,3 +54,31 @@ def formatar_contexto_state(session_state: dict) -> str:
         + "\n".join(partes)
         + "\n--- FIM DO CONTEXTO ---"
     )
+
+
+def formatar_contexto_completo(
+    session_state: dict, memory_context: str = ""
+) -> str:
+    """Combina memória consolidada + estado da sessão para injeção no prompt.
+
+    Args:
+        session_state: O session_state carregado do Redis.
+        memory_context: Texto de memória consolidada (fatos de longo prazo).
+
+    Returns:
+        String formatada combinando memória e contexto da sessão.
+    """
+    parts = []
+
+    if memory_context:
+        parts.append(
+            "\n\n--- MEMÓRIA DE LONGO PRAZO ---\n"
+            + memory_context
+            + "\n--- FIM DA MEMÓRIA ---"
+        )
+
+    state_context = formatar_contexto_state(session_state)
+    if state_context:
+        parts.append(state_context)
+
+    return "".join(parts)
