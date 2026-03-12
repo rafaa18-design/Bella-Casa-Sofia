@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import ReactMarkdown, { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API = "/api";
 
 // =============================================================================
 // Design Tokens — Light & Dark (per Ask AI Design System)
