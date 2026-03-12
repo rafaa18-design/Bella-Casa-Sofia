@@ -57,6 +57,9 @@ COPY --from=builder --chown=appuser:appgroup /app/.venv /app/.venv
 # Copy application code
 COPY --chown=appuser:appgroup app/ ./app/
 
+# Copy prompt files
+COPY --chown=appuser:appgroup prompt/ ./prompt/
+
 # Set environment variables
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \

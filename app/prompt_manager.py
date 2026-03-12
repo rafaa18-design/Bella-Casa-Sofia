@@ -10,6 +10,7 @@ Manages agent prompts with the following strategy:
 import logging
 import re
 import time
+from pathlib import Path
 from typing import Any
 
 from app.config import settings
@@ -32,10 +33,19 @@ class PromptManager:
         self._prompt_name = settings.AGENT_PROMPT_NAME
         self._prompt_version = settings.AGENT_PROMPT_VERSION
         self._prompt_label = settings.AGENT_PROMPT_LABEL
-        self._fallback = settings.AGENT_INSTRUCTIONS_FALLBACK
+        self._fallback = self._load_fallback()
         self._redis_key = settings.PROMPT_REDIS_KEY
         self._redis_ttl = settings.PROMPT_REDIS_TTL
         self._langfuse_not_found_until: float = 0
+
+    @staticmethod
+    def _load_fallback() -> str:
+        """Load fallback prompt from file, falling back to config string."""
+        prompt_file = Path(__file__).parent.parent / 'prompt' / 'prompt-v1.md'
+        if prompt_file.exists():
+            logger.info(f'Loading fallback prompt from {prompt_file}')
+            return prompt_file.read_text(encoding='utf-8')
+        return settings.AGENT_INSTRUCTIONS_FALLBACK
 
     @property
     def is_versioned(self) -> bool:
