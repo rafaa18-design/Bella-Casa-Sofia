@@ -209,6 +209,10 @@ class ToolRegistry:
         if 'run_context' in sig.parameters:
             args = {**args, 'run_context': run_context}
 
+        # Filter args to only include parameters the function accepts
+        valid_params = set(sig.parameters.keys())
+        args = {k: v for k, v in args.items() if k in valid_params}
+
         try:
             # Support both sync and async functions
             result = tool_def.func(**args)
