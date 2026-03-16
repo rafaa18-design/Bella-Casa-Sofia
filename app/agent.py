@@ -288,8 +288,8 @@ async def _traced_completion(
         gen.update(
             output=output,
             usage_details={
-                'input_tokens': getattr(usage, 'prompt_tokens', 0) or 0,
-                'output_tokens': getattr(usage, 'completion_tokens', 0) or 0,
+                'input': getattr(usage, 'prompt_tokens', 0) or 0,
+                'output': getattr(usage, 'completion_tokens', 0) or 0,
             } if usage else None,
         )
         return response
