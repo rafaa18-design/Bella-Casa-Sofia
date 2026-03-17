@@ -353,20 +353,15 @@ async def execute_agent(
         )
         registry = get_tools_registry()
 
-        # Execute agent loop with Langfuse tracing context
-        with propagate_attributes(
-            user_id=conversation_id,
-            session_id=conversation_id,
-            tags=[settings.AGENT_NAME, model_id],
-        ):
-            response = await run_agent_loop(
-                messages=messages,
-                tools=registry,
-                run_context=run_context,
-                model=model,
-                max_iterations=settings.MAX_TURNS,
-                max_tokens=settings.MAX_OUTPUT_TOKENS,
-            )
+        # Execute agent loop (Langfuse context propagated from run())
+        response = await run_agent_loop(
+            messages=messages,
+            tools=registry,
+            run_context=run_context,
+            model=model,
+            max_iterations=settings.MAX_TURNS,
+            max_tokens=settings.MAX_OUTPUT_TOKENS,
+        )
 
         # Store messages in Redis
         response_text = extract_response_text(response)
@@ -421,9 +416,14 @@ async def execute_agent(
 
     latency_ms = (time.perf_counter() - start_time) * 1000
 
-    # Flush Langfuse traces (important for ephemeral containers like Cloud Run)
+    # Set trace I/O for Langfuse visibility
     try:
-        get_langfuse_client().flush()
+        lf = get_langfuse_client()
+        lf.set_current_trace_io(
+            input={'message': text_message, 'conversation_id': conversation_id},
+            output={'response': extract_response_text(response) if response else '', 'tools_used': actions},
+        )
+        lf.flush()
     except Exception:
         pass
 
@@ -557,7 +557,14 @@ async def run(request: RunRequest) -> RunResponse:
                 metrics=Metrics(latency_ms=0, tokens_used=None, cost_estimate=None),
             )
 
-    result = await execute_agent(request, debug=False)
+    # Propagate Langfuse attributes BEFORE calling execute_agent
+    # so @observe trace inherits session_id, user_id, tags
+    with propagate_attributes(
+        user_id=request.conversation_id,
+        session_id=request.conversation_id,
+        tags=[settings.AGENT_NAME],
+    ):
+        result = await execute_agent(request, debug=False)
 
     if result.error:
         return RunResponse(

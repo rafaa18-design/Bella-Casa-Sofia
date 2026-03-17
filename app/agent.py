@@ -435,6 +435,8 @@ async def run_agent_loop(
             tc: Any, tool_name: str, args: dict
         ) -> tuple[str, str, bool]:
             """Execute a single tool, returns (tool_call_id, result, should_stop)."""
+            from langfuse import get_client as _get_lf
+
             nonlocal tool_call_counts
 
             tools_used.append(tool_name)
@@ -461,22 +463,31 @@ async def run_agent_loop(
                 )
                 return tc.id, tool_call_cache[cache_key], False
 
-            # Execute the tool
+            # Execute the tool with Langfuse span
+            lf = _get_lf()
             should_stop = False
-            try:
-                result = await tools.execute(tool_name, args, run_context)
-                result = _truncate_tool_output(result)
-                # Cache the result for deduplication
-                tool_call_cache[cache_key] = result
-            except RetryAgentRun as e:
-                result = (
-                    f'Error: {e.message}'
-                    if e.message
-                    else 'Error: please retry with corrected parameters.'
-                )
-            except StopAgentRun as e:
-                result = e.message or ''
-                should_stop = True
+            with lf.start_as_current_observation(
+                as_type='span',
+                name=f'tool-{tool_name}',
+                input=args,
+            ) as tool_span:
+                try:
+                    result = await tools.execute(tool_name, args, run_context)
+                    result = _truncate_tool_output(result)
+                    # Cache the result for deduplication
+                    tool_call_cache[cache_key] = result
+                    tool_span.update(output=result)
+                except RetryAgentRun as e:
+                    result = (
+                        f'Error: {e.message}'
+                        if e.message
+                        else 'Error: please retry with corrected parameters.'
+                    )
+                    tool_span.update(output=result, level='WARNING')
+                except StopAgentRun as e:
+                    result = e.message or ''
+                    should_stop = True
+                    tool_span.update(output=result, metadata={'stop': True})
 
             return tc.id, result, should_stop
 
