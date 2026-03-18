@@ -286,7 +286,14 @@ async def _traced_completion(
         usage = getattr(response, 'usage', None)
         output = None
         if response.choices:
-            output = response.choices[0].message.content
+            msg = response.choices[0].message
+            if msg.content:
+                output = msg.content
+            elif getattr(msg, 'tool_calls', None):
+                output = [
+                    {'tool': tc.function.name, 'args': tc.function.arguments}
+                    for tc in msg.tool_calls
+                ]
         gen.update(
             output=output,
             usage_details={
