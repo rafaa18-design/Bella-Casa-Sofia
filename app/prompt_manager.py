@@ -34,7 +34,7 @@ class PromptManager:
         self._prompt_version = settings.AGENT_PROMPT_VERSION
         self._prompt_label = settings.AGENT_PROMPT_LABEL
         self._fallback = self._load_fallback()
-        self._redis_key = settings.PROMPT_REDIS_KEY
+        self._redis_key = f'{settings.AGENT_NAME}:{settings.PROMPT_REDIS_KEY}'
         self._redis_ttl = settings.PROMPT_REDIS_TTL
         self._langfuse_not_found_until: float = 0
 
