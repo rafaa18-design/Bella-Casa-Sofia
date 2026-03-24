@@ -124,7 +124,7 @@ def transcribe_audio(audio_bytes: bytes, mime_type: str | None = None) -> str:
         try:
             b64_audio = base64.b64encode(audio_bytes).decode('utf-8')
             resp = httpx.post(
-                f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={settings.GEMINI_API_KEY}',
+                f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview:generateContent?key={settings.GEMINI_API_KEY}',
                 json={
                     'contents': [{
                         'parts': [
