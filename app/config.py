@@ -64,6 +64,8 @@ class Settings(BaseSettings):
 
     # Google Gemini API (used for audio transcription when OpenAI is not available)
     GEMINI_API_KEY: str = ''
+    GEMINI_TRANSCRIPTION_MODEL: str = 'gemini-2.5-flash-preview'
+    OPENAI_TRANSCRIPTION_MODEL: str = 'gpt-4o-mini-transcribe'
 
     # Vertex AI (Google Cloud)
     GOOGLE_CLOUD_PROJECT: str = ''

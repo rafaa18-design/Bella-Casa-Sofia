@@ -124,7 +124,7 @@ def transcribe_audio(audio_bytes: bytes, mime_type: str | None = None) -> str:
         try:
             b64_audio = base64.b64encode(audio_bytes).decode('utf-8')
             resp = httpx.post(
-                f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview:generateContent?key={settings.GEMINI_API_KEY}',
+                f'https://generativelanguage.googleapis.com/v1beta/models/{settings.GEMINI_TRANSCRIPTION_MODEL}:generateContent?key={settings.GEMINI_API_KEY}',
                 json={
                     'contents': [{
                         'parts': [
@@ -159,7 +159,7 @@ def transcribe_audio(audio_bytes: bytes, mime_type: str | None = None) -> str:
                     'https://api.openai.com/v1/audio/transcriptions',
                     headers={'Authorization': f'Bearer {settings.OPENAI_API_KEY}'},
                     files={'file': (f'audio{ext}', audio_file)},
-                    data={'model': 'gpt-4o-mini-transcribe', 'language': 'pt'},
+                    data={'model': settings.OPENAI_TRANSCRIPTION_MODEL, 'language': 'pt'},
                     timeout=30.0,
                 )
                 if resp.status_code == 200:
