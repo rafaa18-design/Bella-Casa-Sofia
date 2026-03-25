@@ -351,9 +351,11 @@ async def run_agent_loop(
     tool_call_counts: Counter = Counter()  # tool_name → count
 
     for iteration in range(max_iterations):
+        is_last_iteration = (iteration == max_iterations - 1)
+
         # Apply prompt caching if supported
         call_messages = messages
-        call_tools = tool_definitions if tool_definitions else None
+        call_tools = tool_definitions if (tool_definitions and not is_last_iteration) else None
         if use_cache and call_tools:
             call_messages, call_tools = _apply_cache_control(
                 messages, call_tools
@@ -547,7 +549,7 @@ async def run_agent_loop(
         f'Agent loop reached max iterations ({max_iterations})'
     )
     return AgentResponse(
-        content=message.content or 'Desculpe, atingi o limite de iterações. Por favor, tente novamente.',
+        content=message.content or '',
         messages=messages,
         input_tokens=total_input_tokens,
         output_tokens=total_output_tokens,
