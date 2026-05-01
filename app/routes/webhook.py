@@ -100,6 +100,12 @@ async def _process_message(phone: str, text: str):
 @router.post('')
 async def webhook(request: Request, background_tasks: BackgroundTasks):
     """Recebe mensagens do UazAPI e processa em background."""
+    # Valida que a requisição veio do UazAPI
+    incoming_token = request.headers.get('token') or request.headers.get('authorization', '').replace('Bearer ', '')
+    if UAZAPI_TOKEN and incoming_token != UAZAPI_TOKEN:
+        logger.warning(f'Webhook recusado — token inválido: {incoming_token[:8]}...')
+        return {'status': 'unauthorized'}
+
     try:
         body = await request.json()
     except Exception:
