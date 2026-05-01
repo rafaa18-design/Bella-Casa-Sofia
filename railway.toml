@@ -8,7 +8,7 @@ nixPkgs = ["python312", "uv"]
 cmds = ["uv sync --frozen"]
 
 [deploy]
-startCommand = "uv run uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+startCommand = ".venv/bin/uvicorn app.main:app --host 0.0.0.0 --port $PORT"
 healthcheckPath = "/health"
 healthcheckTimeout = 30
 restartPolicyType = "on_failure"
