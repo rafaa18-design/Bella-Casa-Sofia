@@ -41,7 +41,7 @@ class PromptManager:
     @staticmethod
     def _load_fallback() -> str:
         """Load fallback prompt from file, falling back to config string."""
-        prompt_file = Path(__file__).parent.parent / 'prompt' / 'prompt-v1.md'
+        prompt_file = Path(__file__).parent.parent / 'prompts' / 'sofia.md'
         if prompt_file.exists():
             logger.info(f'Loading fallback prompt from {prompt_file}')
             return prompt_file.read_text(encoding='utf-8')
