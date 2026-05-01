@@ -1,4 +1,5 @@
-"""Rotas internas da API Firebase — chamadas pelas tools da Valentina."""
+"""Rotas internas da API Firebase — chamadas pelas tools da Sofia."""
+import logging
 import os
 from datetime import datetime
 
@@ -6,6 +7,8 @@ from fastapi import APIRouter, Header, HTTPException
 from google.cloud import firestore
 from google.oauth2 import service_account
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix='/api/firebase', tags=['firebase'])
 
@@ -154,3 +157,67 @@ async def schedule_visit(
     })
 
     return {'success': True}
+
+
+# ---------------------------------------------------------------------------
+# Conversations — chamado internamente pelo webhook
+# ---------------------------------------------------------------------------
+
+async def load_conversation_history(phone: str, limit: int = 20) -> list[dict]:
+    """Carrega o histórico de conversa do Firestore para reconstruir contexto após reinício."""
+    try:
+        db = _get_db()
+        docs = list(
+            db.collection('conversations').where('phone', '==', phone).limit(1).stream()
+        )
+        if not docs:
+            return []
+        messages = docs[0].to_dict().get('messages', [])
+        return [
+            {'role': msg['role'], 'content': msg['content']}
+            for msg in messages[-limit:]
+        ]
+    except Exception as e:
+        logger.error(f'Erro ao carregar histórico do Firestore: {e}')
+        return []
+
+
+async def save_conversation_message(
+    phone: str,
+    lead_id: str,
+    user_message: str,
+    assistant_message: str,
+    stage: str = 'qualificacao',
+) -> None:
+    """Salva as mensagens da conversa no Firestore (chamado pelo webhook)."""
+    try:
+        db = _get_db()
+        now = datetime.utcnow()
+        messages_to_add = [
+            {'role': 'user', 'content': user_message, 'timestamp': now},
+            {'role': 'assistant', 'content': assistant_message, 'timestamp': now},
+        ]
+
+        docs = list(
+            db.collection('conversations').where('phone', '==', phone).limit(1).stream()
+        )
+
+        if docs:
+            update_data: dict = {
+                'messages': firestore.ArrayUnion(messages_to_add),
+                'stage': stage,
+                'updatedAt': now,
+            }
+            if lead_id:
+                update_data['leadId'] = lead_id
+            db.collection('conversations').document(docs[0].id).update(update_data)
+        else:
+            db.collection('conversations').add({
+                'phone': phone,
+                'leadId': lead_id,
+                'messages': messages_to_add,
+                'stage': stage,
+                'updatedAt': now,
+            })
+    except Exception as e:
+        logger.error(f'Erro ao salvar conversa no Firestore: {e}')

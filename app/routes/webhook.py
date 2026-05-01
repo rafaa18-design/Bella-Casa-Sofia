@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from app.agent import build_system_messages, get_litellm_model, get_tools_registry, run_agent_loop
 from app.prompt_manager import get_agent_instructions
+from app.routes.firebase_api import load_conversation_history, save_conversation_message
 from app.runtime import RunContext
 
 logger = logging.getLogger(__name__)
@@ -42,8 +43,15 @@ async def _send_whatsapp(phone: str, text: str):
 
 
 async def _process_message(phone: str, text: str):
-    """Processa a mensagem e gera resposta da Valentina."""
+    """Processa a mensagem e gera resposta da Sofia."""
     history = _history.get(phone, [])
+
+    # Se não há histórico em memória (ex: servidor reiniciou), reconstruir do Firestore
+    if not history:
+        history = await load_conversation_history(phone)
+        if history:
+            logger.info(f'Histórico reconstruído do Firestore para {phone}: {len(history)} mensagens')
+            _history[phone] = history
 
     instructions = await get_agent_instructions()
     messages = build_system_messages(
@@ -70,13 +78,19 @@ async def _process_message(phone: str, text: str):
         max_tokens=1024,
     )
 
-    # Salva histórico (últimas 20 mensagens)
+    # Salva histórico em memória (últimas 20 mensagens)
     history.append({'role': 'user', 'content': text})
     history.append({'role': 'assistant', 'content': response.content})
     _history[phone] = history[-20:]
 
-    # Se handoff completo, limpa histórico para próxima conversa
-    if run_context.session_state.get('handoff_complete'):
+    # Determina estágio e persiste conversa no Firestore
+    handoff_complete = run_context.session_state.get('handoff_complete', False)
+    stage = 'encerrado' if handoff_complete else 'qualificacao'
+    lead_id = run_context.session_state.get('lead_id', '')
+    await save_conversation_message(phone, lead_id, text, response.content, stage)
+
+    # Se handoff completo, limpa histórico em memória para próxima conversa
+    if handoff_complete:
         _history.pop(phone, None)
 
     if response.content:
