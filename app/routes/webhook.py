@@ -105,21 +105,25 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
     except Exception:
         return {'status': 'invalid_body'}
 
-    logger.info(f'Webhook body recebido: {str(body)[:3000]}')
+    # Valida token da instância UazAPI (vem dentro do body)
+    msg_data = body.get('message', {})
+    incoming_token = msg_data.get('token', '')
+    if UAZAPI_TOKEN and incoming_token and incoming_token != UAZAPI_TOKEN:
+        logger.warning('Webhook recusado — token inválido')
+        return {'status': 'unauthorized'}
 
     # Ignora mensagens enviadas pelo próprio número
-    if body.get('fromMe'):
+    if msg_data.get('fromMe', False):
         return {'status': 'ignored'}
 
-    phone = body.get('phone') or body.get('from', '')
-    text = body.get('message') or body.get('body', '')
-    msg_type = body.get('type', 'text')
+    phone = body.get('messageSenderPhone', '')
+    text = body.get('text', '')
+    msg_type = body.get('type', '')
 
     if not phone or not text or msg_type != 'text':
         return {'status': 'ignored'}
 
-    # Remove prefixo do país se necessário (55 para Brasil)
-    phone = phone.replace('@s.whatsapp.net', '').replace('@c.us', '')
+    logger.info(f'Mensagem de {phone}: {text[:50]}')
 
     logger.info(f'Mensagem recebida de {phone}: {text[:50]}')
     background_tasks.add_task(_process_message, phone, text)
