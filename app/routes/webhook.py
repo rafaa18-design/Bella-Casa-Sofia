@@ -108,12 +108,6 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
     # Campos da mensagem ficam dentro de body['message']
     msg_data = body.get('message', {})
 
-    # Valida token da instância UazAPI
-    incoming_token = body.get('token', '') or msg_data.get('token', '')
-    if UAZAPI_TOKEN and incoming_token and incoming_token != UAZAPI_TOKEN:
-        logger.warning('Webhook recusado — token inválido')
-        return {'status': 'unauthorized'}
-
     # Ignora mensagens enviadas pelo próprio número
     if msg_data.get('fromMe', False):
         return {'status': 'ignored'}
