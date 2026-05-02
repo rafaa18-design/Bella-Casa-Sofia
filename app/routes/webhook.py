@@ -123,8 +123,6 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
     if not phone or not text or msg_type != 'text':
         return {'status': 'ignored'}
 
-    logger.info(f'Mensagem de {phone}: {text[:50]}')
-
     logger.info(f'Mensagem recebida de {phone}: {text[:50]}')
     background_tasks.add_task(_process_message, phone, text)
 
