@@ -105,7 +105,7 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
     except Exception:
         return {'status': 'invalid_body'}
 
-    logger.info(f'RAW type={body.get("type")} phone={body.get("messageSenderPhone")} text={str(body.get("text",""))[:30]} fromMe={body.get("message",{}).get("fromMe")}')
+    logger.info(f'RAW keys={list(body.keys())} EventType={body.get("EventType")} type={body.get("type")} phone={body.get("messageSenderPhone")} text={str(body.get("text",""))[:30]}')
 
     # Valida token da instância UazAPI (vem dentro do body)
     msg_data = body.get('message', {})
