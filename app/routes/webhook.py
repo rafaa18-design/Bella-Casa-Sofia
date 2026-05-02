@@ -112,8 +112,15 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
     if msg_data.get('fromMe', False):
         return {'status': 'ignored'}
 
-    # Tenta root primeiro, depois dentro de message (compatibilidade)
-    phone = body.get('messageSenderPhone') or msg_data.get('senderPhone', '')
+    # Tenta root primeiro, depois message, depois chat
+    chat_data = body.get('chat', {})
+    phone = (
+        body.get('messageSenderPhone')
+        or msg_data.get('senderPhone')
+        or chat_data.get('phone', '')
+    )
+    # Remove caracteres não numéricos do telefone
+    phone = ''.join(filter(str.isdigit, phone))
     text = body.get('text') or msg_data.get('text', '')
     msg_type = body.get('type') or msg_data.get('type', '')
 
