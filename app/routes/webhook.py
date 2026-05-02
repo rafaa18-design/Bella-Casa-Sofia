@@ -105,7 +105,7 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
     except Exception:
         return {'status': 'invalid_body'}
 
-    logger.info(f'Webhook body recebido: {str(body)[:500]}')
+    logger.info(f'Webhook body recebido: {str(body)[:3000]}')
 
     # Ignora mensagens enviadas pelo próprio número
     if body.get('fromMe'):
