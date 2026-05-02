@@ -105,11 +105,11 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
     except Exception:
         return {'status': 'invalid_body'}
 
-    logger.info(f'RAW keys={list(body.keys())} EventType={body.get("EventType")} type={body.get("type")} phone={body.get("messageSenderPhone")} text={str(body.get("text",""))[:30]}')
-
-    # Valida token da instância UazAPI (vem dentro do body)
+    # Campos da mensagem ficam dentro de body['message']
     msg_data = body.get('message', {})
-    incoming_token = msg_data.get('token', '')
+
+    # Valida token da instância UazAPI
+    incoming_token = body.get('token', '') or msg_data.get('token', '')
     if UAZAPI_TOKEN and incoming_token and incoming_token != UAZAPI_TOKEN:
         logger.warning('Webhook recusado — token inválido')
         return {'status': 'unauthorized'}
@@ -118,9 +118,12 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
     if msg_data.get('fromMe', False):
         return {'status': 'ignored'}
 
-    phone = body.get('messageSenderPhone', '')
-    text = body.get('text', '')
-    msg_type = body.get('type', '')
+    # Tenta root primeiro, depois dentro de message (compatibilidade)
+    phone = body.get('messageSenderPhone') or msg_data.get('senderPhone', '')
+    text = body.get('text') or msg_data.get('text', '')
+    msg_type = body.get('type') or msg_data.get('type', '')
+
+    logger.info(f'Webhook: phone={phone} type={msg_type} text={text[:30]}')
 
     if not phone or not text or msg_type != 'text':
         return {'status': 'ignored'}
