@@ -110,24 +110,27 @@ async def _process_message(phone: str, text: str):
         max_tokens=1024,
     )
 
-    # Salva histórico em memória (últimas 20 mensagens)
+    # Aplica limpeza: remove markdown, emojis e perguntas extras
+    clean_content = _clean_response(response.content) if response.content else ''
+    logger.info(f'Resposta limpa para {phone}: {clean_content[:120]}')
+
+    # Salva histórico em memória com a versão limpa (últimas 20 mensagens)
     history.append({'role': 'user', 'content': text})
-    history.append({'role': 'assistant', 'content': response.content})
+    history.append({'role': 'assistant', 'content': clean_content})
     _history[phone] = history[-20:]
 
-    # Determina estágio e persiste conversa no Firestore
+    # Determina estágio e persiste conversa no Firestore (versão limpa)
     handoff_complete = run_context.session_state.get('handoff_complete', False)
     stage = 'encerrado' if handoff_complete else 'qualificacao'
     lead_id = run_context.session_state.get('lead_id', '')
-    await save_conversation_message(phone, lead_id, text, response.content, stage)
+    await save_conversation_message(phone, lead_id, text, clean_content, stage)
 
     # Se handoff completo, limpa histórico em memória para próxima conversa
     if handoff_complete:
         _history.pop(phone, None)
 
-    if response.content:
-        clean = _clean_response(response.content)
-        await _send_whatsapp(phone, clean)
+    if clean_content:
+        await _send_whatsapp(phone, clean_content)
 
 
 @router.post('')
