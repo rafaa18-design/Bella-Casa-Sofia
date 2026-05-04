@@ -139,7 +139,6 @@ def verificar_horario(run_context: RunContext) -> str:
 @tool
 async def registrar_lead(
     run_context: RunContext,
-    phone: str,
     name: str,
     city: str,
     product: str,
@@ -150,8 +149,9 @@ async def registrar_lead(
 ) -> str:
     """Registra o lead qualificado no banco de dados.
 
+    O telefone do cliente é obtido automaticamente do contexto da conversa.
+
     Args:
-        phone: Número de WhatsApp do cliente.
         name: Nome do cliente.
         city: Cidade do cliente.
         product: Produto desejado com detalhes.
@@ -160,6 +160,7 @@ async def registrar_lead(
         language: Idioma da conversa (pt, en, es).
         ambient_size: Metragem do ambiente (opcional).
     """
+    phone = run_context.session_state.get("phone", "")
     routing_type = run_context.session_state.get("routing_type", "remoto")
 
     payload = {
