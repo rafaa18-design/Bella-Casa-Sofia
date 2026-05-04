@@ -110,20 +110,27 @@ async def _process_message(phone: str, text: str):
         max_tokens=1024,
     )
 
+    handoff_complete = run_context.session_state.get('handoff_complete', False)
+
+    # Se handoff, response.content é o JSON interno do StopAgentRun — não enviar ao cliente
+    raw_content = response.content or ''
+    is_system_json = raw_content.strip().startswith('{"handoff"')
+    message_to_send = '' if (handoff_complete and is_system_json) else raw_content
+
     # Aplica limpeza: remove markdown, emojis e perguntas extras
-    clean_content = _clean_response(response.content) if response.content else ''
+    clean_content = _clean_response(message_to_send) if message_to_send else ''
     logger.info(f'Resposta limpa para {phone}: {clean_content[:120]}')
 
     # Salva histórico em memória com a versão limpa (últimas 20 mensagens)
     history.append({'role': 'user', 'content': text})
-    history.append({'role': 'assistant', 'content': clean_content})
+    if clean_content:
+        history.append({'role': 'assistant', 'content': clean_content})
     _history[phone] = history[-20:]
 
     # Determina estágio e persiste conversa no Firestore (versão limpa)
-    handoff_complete = run_context.session_state.get('handoff_complete', False)
     stage = 'encerrado' if handoff_complete else 'qualificacao'
     lead_id = run_context.session_state.get('lead_id', '')
-    await save_conversation_message(phone, lead_id, text, clean_content, stage)
+    await save_conversation_message(phone, lead_id, text, clean_content or '[handoff]', stage)
 
     # Se handoff completo, limpa histórico em memória para próxima conversa
     if handoff_complete:
