@@ -203,9 +203,12 @@ async def save_conversation_message(
         )
 
         if docs:
+            current_stage = docs[0].to_dict().get('stage', 'qualificacao')
+            # Stage nunca regride: se já está encerrado, não volta para qualificacao
+            final_stage = 'encerrado' if (stage == 'encerrado' or current_stage == 'encerrado') else stage
             update_data: dict = {
                 'messages': firestore.ArrayUnion(messages_to_add),
-                'stage': stage,
+                'stage': final_stage,
                 'updatedAt': now,
             }
             if lead_id:
