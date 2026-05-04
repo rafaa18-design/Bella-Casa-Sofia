@@ -110,7 +110,11 @@ async def _process_message(phone: str, text: str):
         max_tokens=1024,
     )
 
-    handoff_complete = run_context.session_state.get('handoff_complete', False)
+    # Handoff completo se a tool foi chamada OU se lead foi registrado e vendedora atribuída
+    handoff_complete = run_context.session_state.get('handoff_complete', False) or (
+        bool(run_context.session_state.get('lead_id'))
+        and bool(run_context.session_state.get('assigned_seller_name'))
+    )
 
     # Se handoff, response.content é o JSON interno do StopAgentRun — não enviar ao cliente
     raw_content = response.content or ''
