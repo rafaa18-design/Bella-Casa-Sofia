@@ -179,7 +179,11 @@ async def registrar_lead(
         ambient_size: Metragem do ambiente (opcional).
     """
     phone = run_context.session_state.get("phone", "")
-    routing_type = run_context.session_state.get("routing_type", "remoto")
+    # Se rotear_cidade não foi chamada, determina o routing pela cidade agora
+    routing_type = run_context.session_state.get("routing_type", "")
+    if not routing_type:
+        routing_type = "matriz" if city.lower().strip() in MATRIZ_CITIES else "remoto"
+        run_context.session_state["routing_type"] = routing_type
 
     payload = {
         "phone": phone,
