@@ -55,19 +55,33 @@ def _headers() -> dict:
 
 
 @tool
-async def verificar_cliente(run_context: RunContext, phone: str) -> str:
+async def verificar_cliente(run_context: RunContext) -> str:
     """Verifica se o cliente já possui cadastro (cliente recorrente).
 
+    O telefone é obtido automaticamente do contexto da sessão.
     Retorna JSON com: is_recurring (bool), lead_id, assigned_seller, seller_name.
     Se não encontrado, retorna is_recurring: false.
     """
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            f"{FIREBASE_URL}/leads/by-phone/{phone}",
-            headers=_headers(),
-            timeout=5,
-        )
+    phone = run_context.session_state.get("phone", "")
+    if not phone:
+        return '{"is_recurring": false}'
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{FIREBASE_URL}/leads/by-phone/{phone}",
+                headers=_headers(),
+                timeout=5,
+            )
+    except Exception as e:
+        logger.error(f"verificar_cliente HTTP error: {e}")
+        return '{"is_recurring": false}'
+
     if resp.status_code == 404:
+        return '{"is_recurring": false}'
+
+    if resp.status_code != 200:
+        logger.error(f"verificar_cliente status {resp.status_code}: {resp.text[:200]}")
         return '{"is_recurring": false}'
 
     data = resp.json()
