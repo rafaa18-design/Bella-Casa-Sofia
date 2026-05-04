@@ -1,10 +1,13 @@
 """Tools da Valentina — Bella Casa."""
+import logging
 import os
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import httpx
 from app.runtime import RunContext, StopAgentRun, tool
+
+logger = logging.getLogger(__name__)
 
 FIREBASE_URL = os.getenv("FIREBASE_BASE_URL", "")
 FIREBASE_TOKEN = os.getenv("FIREBASE_ADMIN_TOKEN", "")
@@ -178,18 +181,31 @@ async def registrar_lead(
         "visitReminderSent": False,
     }
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{FIREBASE_URL}/leads",
-            json=payload,
-            headers=_headers(),
-            timeout=5,
-        )
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{FIREBASE_URL}/leads",
+                json=payload,
+                headers=_headers(),
+                timeout=10,
+            )
+    except Exception as e:
+        logger.error(f"registrar_lead HTTP error: {e}")
+        return f'{{"success": false, "error": "Falha ao conectar com o servidor: {e}"}}'
+
+    if resp.status_code not in (200, 201):
+        logger.error(f"registrar_lead status {resp.status_code}: {resp.text[:300]}")
+        return f'{{"success": false, "error": "HTTP {resp.status_code}: {resp.text[:200]}"}}'
 
     data = resp.json()
     lead_id = data.get("id", "")
+    if not lead_id:
+        logger.error(f"registrar_lead: lead_id vazio na resposta: {data}")
+        return '{"success": false, "error": "lead_id vazio na resposta do servidor"}'
+
     run_context.session_state["lead_id"] = lead_id
     run_context.session_state["lead_name"] = name
+    logger.info(f"registrar_lead: lead criado com sucesso, id={lead_id}")
     return f'{{"success": true, "lead_id": "{lead_id}"}}'
 
 
