@@ -9,7 +9,8 @@ from app.runtime import RunContext, StopAgentRun, tool
 
 logger = logging.getLogger(__name__)
 
-FIREBASE_URL = os.getenv("FIREBASE_BASE_URL", "")
+_port = os.getenv("PORT", "8000")
+FIREBASE_URL = os.getenv("FIREBASE_BASE_URL") or f"http://localhost:{_port}/api/firebase"
 FIREBASE_TOKEN = os.getenv("FIREBASE_ADMIN_TOKEN", "")
 
 BAHIA_TZ = ZoneInfo("America/Bahia")
