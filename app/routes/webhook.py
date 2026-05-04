@@ -30,26 +30,34 @@ class UazapiMessage(BaseModel):
 
 
 def _clean_response(text: str) -> str:
-    """Remove markdown e emojis da resposta antes de enviar ao cliente."""
+    """Remove markdown, emojis e perguntas extras da resposta antes de enviar ao cliente."""
     # Remove negrito e itálico (**texto**, *texto*, __texto__, _texto_)
-    text = re.sub(r'\*{1,2}([^*]+)\*{1,2}', r'\1', text)
-    text = re.sub(r'_{1,2}([^_]+)_{1,2}', r'\1', text)
+    text = re.sub(r'\*{1,3}([^*\n]+)\*{1,3}', r'\1', text)
+    text = re.sub(r'_{1,2}([^_\n]+)_{1,2}', r'\1', text)
     # Remove hashtags de título (# Título → Título)
     text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
-    # Converte listas numeradas (1. item) em texto corrido sem número
+    # Remove listas numeradas (1. item → item)
     text = re.sub(r'^\d+\.\s+', '', text, flags=re.MULTILINE)
     # Remove marcadores de lista (- item, • item)
     text = re.sub(r'^[-•]\s+', '', text, flags=re.MULTILINE)
-    # Remove emojis (bloco de caracteres Unicode de emoji)
+    # Remove emojis
     text = re.sub(
         r'[\U0001F300-\U0001F9FF\U00002600-\U000027BF\U0001FA00-\U0001FA9F'
         r'\U00002702-\U000027B0\U0000FE0F\U0001F1E0-\U0001F1FF]',
         '',
         text,
     )
-    # Colapsa linhas em branco múltiplas em uma
+    # Normaliza espaços extras e linhas em branco
+    text = re.sub(r'  +', ' ', text)
     text = re.sub(r'\n{3,}', '\n\n', text)
-    return text.strip()
+    text = text.strip()
+
+    # Regra de uma pergunta por vez: se houver mais de um "?", corta na primeira
+    if text.count('?') > 1:
+        first_q = text.index('?')
+        text = text[:first_q + 1].strip()
+
+    return text
 
 
 async def _send_whatsapp(phone: str, text: str):
