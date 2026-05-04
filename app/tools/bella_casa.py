@@ -258,23 +258,66 @@ async def distribuir_vendedora(
 async def agendar_visita(
     run_context: RunContext,
     visit_date: str,
+    visit_time: str,
 ) -> str:
-    """Registra a data de visita do cliente à loja e cria o lembrete automático.
+    """Registra a data e horário de visita do cliente à loja e cria o lembrete automático.
+
+    Valida se o horário está dentro do funcionamento da loja e verifica conflitos de agenda
+    (intervalo mínimo de 30 minutos entre visitas).
 
     Args:
         visit_date: Data da visita no formato DD/MM/AAAA.
+        visit_time: Horário da visita no formato HH:MM (ex: 09:00, 14:30).
     """
+    from datetime import datetime as dt
+
+    # Valida e parseia data + hora
+    try:
+        visit_dt = dt.strptime(f"{visit_date} {visit_time}", "%d/%m/%Y %H:%M")
+    except ValueError:
+        return '{"success": false, "error": "Formato inválido. Use DD/MM/AAAA para data e HH:MM para horário."}'
+
+    # Verifica se é domingo (fechado)
+    weekday = visit_dt.weekday()
+    if weekday == 6:
+        return '{"success": false, "error": "A loja não abre aos domingos. Escolha de segunda a sábado."}'
+
+    # Valida horário comercial
+    hours = BUSINESS_HOURS.get(weekday)
+    if hours is None:
+        return '{"success": false, "error": "Loja fechada neste dia."}'
+
+    open_time, close_time = hours
+    if not (open_time <= visit_time <= close_time):
+        return (
+            f'{{"success": false, "error": "Horário fora do funcionamento. '
+            f'Neste dia atendemos das {open_time} às {close_time}."}}'
+        )
+
     lead_id = run_context.session_state.get("lead_id", "")
     phone = run_context.session_state.get("phone", "")
     name = run_context.session_state.get("lead_name", "")
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{FIREBASE_URL}/leads/{lead_id}/schedule-visit",
-            json={"visitDate": visit_date, "phone": phone, "leadName": name},
-            headers=_headers(),
-            timeout=5,
-        )
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{FIREBASE_URL}/leads/{lead_id}/schedule-visit",
+                json={"visitDate": visit_date, "visitTime": visit_time, "phone": phone, "leadName": name},
+                headers=_headers(),
+                timeout=5,
+            )
+    except Exception as e:
+        logger.error(f"agendar_visita HTTP error: {e}")
+        return '{"success": false, "error": "Erro ao conectar com o servidor."}'
+
+    if resp.status_code != 200:
+        logger.error(f"agendar_visita status {resp.status_code}: {resp.text[:200]}")
+        return f'{{"success": false, "error": "{resp.json().get("detail", "Erro ao agendar")}"}}'
+
+    data = resp.json()
+    if not data.get("success"):
+        conflict_msg = data.get("conflict_message", "Horário indisponível.")
+        return f'{{"success": false, "error": "{conflict_msg}"}}'
 
     return '{"success": true, "reminder_scheduled": true}'
 

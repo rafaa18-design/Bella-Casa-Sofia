@@ -59,6 +59,7 @@ class AssignPayload(BaseModel):
 
 class VisitPayload(BaseModel):
     visitDate: str
+    visitTime: str
     phone: str
     leadName: str
 
@@ -135,11 +136,31 @@ async def schedule_visit(
 ):
     _check_token(authorization)
     db = _get_db()
-
-    visit_dt = datetime.strptime(payload.visitDate, '%d/%m/%Y')
-    reminder_dt = visit_dt.replace(hour=19, minute=0, second=0)
     from datetime import timedelta
-    reminder_dt = reminder_dt - timedelta(days=1)
+
+    visit_dt = datetime.strptime(f"{payload.visitDate} {payload.visitTime}", '%d/%m/%Y %H:%M')
+
+    # Verifica conflitos: busca visitas no mesmo dia com intervalo menor que 30 min
+    day_start = visit_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = visit_dt.replace(hour=23, minute=59, second=59)
+    existing = db.collection('leads').where('visitDate', '>=', day_start).where('visitDate', '<=', day_end).stream()
+    for doc in existing:
+        data = doc.to_dict()
+        existing_dt = data.get('visitDate')
+        if existing_dt and hasattr(existing_dt, 'replace'):
+            diff = abs((visit_dt - existing_dt).total_seconds()) / 60
+            if diff < 30:
+                conflict_time = existing_dt.strftime('%H:%M')
+                suggested = (visit_dt + timedelta(minutes=30)).strftime('%H:%M')
+                return {
+                    'success': False,
+                    'conflict_message': (
+                        f'Já temos uma visita agendada próxima às {conflict_time}. '
+                        f'O próximo horário disponível seria às {suggested}.'
+                    )
+                }
+
+    reminder_dt = visit_dt.replace(hour=19, minute=0, second=0) - timedelta(days=1)
 
     db.collection('leads').document(lead_id).update({
         'status': 'agendado',
