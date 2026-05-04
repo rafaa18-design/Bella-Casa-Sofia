@@ -1,6 +1,7 @@
 """Webhook do UazAPI — entrada de mensagens do WhatsApp para a Valentina."""
 import logging
 import os
+import re
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Request
@@ -26,6 +27,29 @@ class UazapiMessage(BaseModel):
     message: str | None = None
     fromMe: bool = False
     type: str = 'text'
+
+
+def _clean_response(text: str) -> str:
+    """Remove markdown e emojis da resposta antes de enviar ao cliente."""
+    # Remove negrito e itálico (**texto**, *texto*, __texto__, _texto_)
+    text = re.sub(r'\*{1,2}([^*]+)\*{1,2}', r'\1', text)
+    text = re.sub(r'_{1,2}([^_]+)_{1,2}', r'\1', text)
+    # Remove hashtags de título (# Título → Título)
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    # Converte listas numeradas (1. item) em texto corrido sem número
+    text = re.sub(r'^\d+\.\s+', '', text, flags=re.MULTILINE)
+    # Remove marcadores de lista (- item, • item)
+    text = re.sub(r'^[-•]\s+', '', text, flags=re.MULTILINE)
+    # Remove emojis (bloco de caracteres Unicode de emoji)
+    text = re.sub(
+        r'[\U0001F300-\U0001F9FF\U00002600-\U000027BF\U0001FA00-\U0001FA9F'
+        r'\U00002702-\U000027B0\U0000FE0F\U0001F1E0-\U0001F1FF]',
+        '',
+        text,
+    )
+    # Colapsa linhas em branco múltiplas em uma
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
 
 
 async def _send_whatsapp(phone: str, text: str):
@@ -94,7 +118,8 @@ async def _process_message(phone: str, text: str):
         _history.pop(phone, None)
 
     if response.content:
-        await _send_whatsapp(phone, response.content)
+        clean = _clean_response(response.content)
+        await _send_whatsapp(phone, clean)
 
 
 @router.post('')
@@ -123,8 +148,6 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
     phone = ''.join(filter(str.isdigit, phone))
     text = body.get('text') or msg_data.get('text', '')
     msg_type = body.get('type') or msg_data.get('type', '')
-
-    logger.info(f'Webhook: phone={phone} type={msg_type} text={text[:30]}')
 
     if not phone or not text or msg_type != 'text':
         return {'status': 'ignored'}
