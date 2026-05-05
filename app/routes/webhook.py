@@ -99,16 +99,24 @@ def _clean_response(text: str) -> str:
 
 async def _send_whatsapp(phone: str, text: str):
     """Envia mensagem de volta para o cliente via UazAPI."""
+    url = f'{UAZAPI_URL}/message/text'
+    if not UAZAPI_URL or not UAZAPI_TOKEN:
+        logger.error(
+            f'UAZAPI não configurado! UAZAPI_URL={UAZAPI_URL!r}, UAZAPI_TOKEN={"***" if UAZAPI_TOKEN else "VAZIO"}'
+        )
+        return
     try:
+        logger.info(f'Enviando para {phone} via {url}')
         async with httpx.AsyncClient() as client:
-            await client.post(
-                f'{UAZAPI_URL}/message/text',
+            resp = await client.post(
+                url,
                 headers={'token': UAZAPI_TOKEN},
                 json={'phone': phone, 'message': text},
                 timeout=10,
             )
+        logger.info(f'UazAPI resposta {phone}: status={resp.status_code} body={resp.text[:200]}')
     except Exception as e:
-        logger.error(f'Erro ao enviar mensagem UazAPI: {e}')
+        logger.error(f'Erro ao enviar mensagem UazAPI para {phone}: {e}')
 
 
 async def _process_message(phone: str, text: str):
@@ -197,7 +205,7 @@ def _parse_uazapi_body(body: dict) -> tuple[str, str, bool]:
 
     logger.info(f'UAZAPI_BODY: {json.dumps(body)[:500]}')
 
-    # Formato Evolution API / free.uazapi.com
+    # Formato Evolution API / free.uazapi.com (campo "data" na raiz)
     data = body.get('data', {})
     if data:
         key = data.get('key', {})
@@ -212,9 +220,16 @@ def _parse_uazapi_body(body: dict) -> tuple[str, str, bool]:
         )
         return phone, text, from_me
 
-    # Formato legado / simples
+    # Formato free.uazapi.com (messageSenderPhone + message.text na raiz)
+    # Estrutura: {"BaseUrl":..., "EventType":"messages", "messageSenderPhone":"556...",
+    #             "message":{"text":"...", "fromMe":false, ...}, "chat":{...}}
     msg_data = body.get('message', {})
     from_me = msg_data.get('fromMe', body.get('fromMe', False))
+
+    # Se é mensagem enviada por nós mesmos, ignorar imediatamente
+    if from_me:
+        return '', '', True
+
     chat_data = body.get('chat', {})
     phone = (
         body.get('messageSenderPhone')
@@ -222,7 +237,24 @@ def _parse_uazapi_body(body: dict) -> tuple[str, str, bool]:
         or chat_data.get('phone', '')
     )
     phone = ''.join(filter(str.isdigit, phone))
-    text = body.get('text') or msg_data.get('text', '')
+
+    # Tenta extrair texto em todos os campos possíveis
+    text = (
+        msg_data.get('text')
+        or msg_data.get('body')
+        or msg_data.get('conversation')
+        or msg_data.get('extendedTextMessage', {}).get('text', '')
+        or body.get('text')
+        or body.get('body')
+        or ''
+    )
+
+    if not phone or not text:
+        logger.warning(
+            f'Mensagem ignorada — phone={phone!r}, text={text!r}, '
+            f'fromMe={from_me}, EventType={body.get("EventType")}, '
+            f'msg_keys={list(msg_data.keys())}'
+        )
 
     return phone, text, from_me
 
