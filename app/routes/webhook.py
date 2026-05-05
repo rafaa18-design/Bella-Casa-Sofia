@@ -98,8 +98,13 @@ def _clean_response(text: str) -> str:
 
 
 async def _send_whatsapp(phone: str, text: str):
-    """Envia mensagem de volta para o cliente via UazAPI."""
-    url = f'{UAZAPI_URL}/message/text'
+    """Envia mensagem de volta para o cliente via UazAPI.
+
+    Endpoint correto: POST /send/text
+    Campos: number (destino) + text (conteúdo)
+    Ref: https://docs.uazapi.com/endpoint/post/send~text
+    """
+    url = f'{UAZAPI_URL}/send/text'
     if not UAZAPI_URL or not UAZAPI_TOKEN:
         logger.error(
             f'UAZAPI não configurado! UAZAPI_URL={UAZAPI_URL!r}, UAZAPI_TOKEN={"***" if UAZAPI_TOKEN else "VAZIO"}'
@@ -111,7 +116,7 @@ async def _send_whatsapp(phone: str, text: str):
             resp = await client.post(
                 url,
                 headers={'token': UAZAPI_TOKEN},
-                json={'phone': phone, 'message': text},
+                json={'number': phone, 'text': text},
                 timeout=10,
             )
         logger.info(f'UazAPI resposta {phone}: status={resp.status_code} body={resp.text[:200]}')
@@ -231,12 +236,18 @@ def _parse_uazapi_body(body: dict) -> tuple[str, str, bool]:
         return '', '', True
 
     chat_data = body.get('chat', {})
-    phone = (
+    # Extrai o número do remetente — tenta todos os campos possíveis do free.uazapi.com
+    # msg_data.sender_pn = número puro | msg_data.sender = JID completo (ex: 556199...@s.whatsapp.net)
+    # msg_data.chatid = JID do chat (ex: 556199...@s.whatsapp.net ou grupo@g.us)
+    sender_raw = (
         body.get('messageSenderPhone')
+        or msg_data.get('sender_pn')
         or msg_data.get('senderPhone')
+        or msg_data.get('sender', '').split('@')[0]
         or chat_data.get('phone', '')
+        or msg_data.get('chatid', '').split('@')[0]
     )
-    phone = ''.join(filter(str.isdigit, phone))
+    phone = ''.join(filter(str.isdigit, sender_raw))
 
     # Tenta extrair texto em todos os campos possíveis
     text = (
