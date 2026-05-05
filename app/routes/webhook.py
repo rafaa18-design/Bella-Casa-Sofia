@@ -66,8 +66,46 @@ class UazapiMessage(BaseModel):
     type: str = 'text'
 
 
+def _strip_internal_thinking(text: str) -> str:
+    """Remove blocos de raciocínio interno do modelo antes de enviar ao cliente.
+
+    O Gemini 2.5 e outros modelos com 'thinking' incluem o processo de raciocínio
+    no texto da resposta. Esses blocos NUNCA devem chegar ao cliente.
+
+    Padrões removidos:
+    - (Pensamento): ... / (Thinking): ...
+    - <pensamento>...</pensamento> / <thinking>...</thinking>
+    - Qualquer parágrafo que comece com marcadores de raciocínio interno
+    """
+    # Remove blocos <thinking>...</thinking> ou <pensamento>...</pensamento>
+    text = re.sub(r'<(thinking|pensamento|thought)>.*?</(thinking|pensamento|thought)>', '', text, flags=re.DOTALL | re.IGNORECASE)
+
+    # Remove parágrafos que começam com "(Pensamento):", "(Thinking):", "(Thought):"
+    # Captura tudo até o próximo parágrafo duplo ou fim do texto
+    text = re.sub(r'\(Pensamento\):.*?(?=\n\n|\Z)', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'\(Thinking\):.*?(?=\n\n|\Z)', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'\(Thought\):.*?(?=\n\n|\Z)', '', text, flags=re.DOTALL | re.IGNORECASE)
+
+    # Se a resposta começa com bloco de pensamento seguido do texto real,
+    # pega apenas a parte após a separação dupla
+    if re.match(r'^\s*\(Pensamento\)', text, re.IGNORECASE) or re.match(r'^\s*\(Thinking\)', text, re.IGNORECASE):
+        parts = re.split(r'\n\n+', text, maxsplit=1)
+        if len(parts) > 1:
+            text = parts[1]
+        else:
+            text = ''
+
+    return text.strip()
+
+
 def _clean_response(text: str) -> str:
-    """Remove markdown, emojis e perguntas extras da resposta antes de enviar ao cliente."""
+    """Remove raciocínio interno, markdown, emojis e perguntas extras antes de enviar ao cliente."""
+    # PRIMEIRO: remove qualquer raciocínio interno do modelo (nunca deve chegar ao cliente)
+    text = _strip_internal_thinking(text)
+
+    if not text:
+        return ''
+
     # Remove negrito e itálico (**texto**, *texto*, __texto__, _texto_)
     text = re.sub(r'\*{1,3}([^*\n]+)\*{1,3}', r'\1', text)
     text = re.sub(r'_{1,2}([^_\n]+)_{1,2}', r'\1', text)
