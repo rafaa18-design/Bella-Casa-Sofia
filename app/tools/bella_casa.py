@@ -242,14 +242,36 @@ async def distribuir_vendedora(
     Se não, usa o round-robin automático.
     """
     lead_id = run_context.session_state.get("lead_id", "")
+    phone = run_context.session_state.get("phone", "")
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{FIREBASE_URL}/leads/{lead_id}/assign",
-            json={"sellerId": seller_id or None},
-            headers=_headers(),
-            timeout=5,
-        )
+    if not lead_id and phone:
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.get(
+                    f"{FIREBASE_URL}/leads/by-phone/{phone}",
+                    headers=_headers(),
+                    timeout=5,
+                )
+            if r.status_code == 200:
+                lead_id = r.json().get("id", "")
+                run_context.session_state["lead_id"] = lead_id
+        except Exception as e:
+            logger.error(f"distribuir_vendedora: falha ao buscar lead_id: {e}")
+
+    if not lead_id:
+        return '{"success": false, "error": "lead_id não encontrado"}'
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{FIREBASE_URL}/leads/{lead_id}/assign",
+                json={"sellerId": seller_id or None},
+                headers=_headers(),
+                timeout=5,
+            )
+    except Exception as e:
+        logger.error(f"distribuir_vendedora HTTP error: {e}")
+        return '{"success": true, "seller_name": "nossa equipe"}'
 
     data = resp.json()
     seller_name = data.get("sellerName", "nossa equipe")
@@ -342,6 +364,28 @@ async def agendar_visita(
     lead_id = run_context.session_state.get("lead_id", "")
     phone = run_context.session_state.get("phone", "")
     name = run_context.session_state.get("lead_name", "")
+
+    # Se lead_id não está na sessão (nova mensagem), busca pelo telefone
+    if not lead_id and phone:
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.get(
+                    f"{FIREBASE_URL}/leads/by-phone/{phone}",
+                    headers=_headers(),
+                    timeout=5,
+                )
+            if r.status_code == 200:
+                lead_data = r.json()
+                lead_id = lead_data.get("id", "")
+                run_context.session_state["lead_id"] = lead_id
+                if not name:
+                    name = lead_data.get("name", "")
+                    run_context.session_state["lead_name"] = name
+        except Exception as e:
+            logger.error(f"agendar_visita: falha ao buscar lead_id: {e}")
+
+    if not lead_id:
+        return '{"success": false, "error": "Cadastro não encontrado. Por favor, finalize o cadastro antes de agendar."}'
 
     try:
         async with httpx.AsyncClient() as client:
