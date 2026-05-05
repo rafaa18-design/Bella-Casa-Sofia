@@ -1,6 +1,7 @@
 """Tools da Valentina — Bella Casa."""
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -100,13 +101,15 @@ async def verificar_cliente(run_context: RunContext) -> str:
 def rotear_cidade(run_context: RunContext, city: str) -> str:
     """Define se o cliente é da praça da matriz ou de outra cidade (atendimento remoto).
 
-    Retorna: routing_type ('matriz' ou 'remoto').
+    Retorna: routing_type ('matriz' ou 'remoto') e invite_visit (true se for matriz).
+    Se invite_visit for true, você DEVE imediatamente convidar o cliente para visitar a loja.
     """
     normalized = city.lower().strip()
     routing = "matriz" if normalized in MATRIZ_CITIES else "remoto"
+    invite_visit = routing == "matriz"
     run_context.session_state["routing_type"] = routing
     run_context.session_state["city"] = city
-    return f'{{"routing_type": "{routing}", "city": "{city}"}}'
+    return f'{{"routing_type": "{routing}", "city": "{city}", "invite_visit": {str(invite_visit).lower()}}}'
 
 
 @tool
@@ -271,11 +274,17 @@ async def agendar_visita(
     """
     from datetime import datetime as dt
 
-    # Valida e parseia data + hora
+    # Normaliza a data: aceita DD/MM ou DD/MM/AAAA, sempre usa o ano atual
+    current_year = dt.now(BAHIA_TZ).year
+    date_part = visit_date.strip()
+    # Remove o ano se vier junto (qualquer formato com 4 dígitos no final)
+    date_part = re.sub(r'[/\-]\d{4}$', '', date_part)
+    date_with_year = f"{date_part}/{current_year}"
+
     try:
-        visit_dt = dt.strptime(f"{visit_date} {visit_time}", "%d/%m/%Y %H:%M")
+        visit_dt = dt.strptime(f"{date_with_year} {visit_time}", "%d/%m/%Y %H:%M")
     except ValueError:
-        return '{"success": false, "error": "Formato inválido. Use DD/MM/AAAA para data e HH:MM para horário."}'
+        return '{"success": false, "error": "Formato inválido. Use DD/MM para data e HH:MM para horário."}'
 
     # Verifica se é domingo (fechado)
     weekday = visit_dt.weekday()
