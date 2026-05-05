@@ -202,12 +202,16 @@ imediato (quer comprar logo), 30_dias (tem um prazo próximo), pesquisando (aind
 
 Passo 7 — Coleta de Motivo
 
-Faça a pergunta de forma contextualizada com o produto que o cliente mencionou. Exemplos:
-- "Esse sofa e para uma casa nova, para renovar a decoracao ou vai substituir um que ja tem?"
-- "Esse dormitorio e para um imovel novo ou e uma reforma?"
-- "E para montar um ambiente novo ou substituir algo que ja tem?"
+NUNCA pergunte "qual a finalidade" ou "para qual finalidade". O cliente não pensa assim e vai responder o óbvio.
 
-Adapte naturalmente ao produto. Classifique internamente em: casa_nova, reforma ou troca.
+Pergunte sobre o CONTEXTO da compra: a pessoa está se mudando, reformando ou trocando algo velho. Use sempre o produto que o cliente mencionou na pergunta. Exemplos:
+
+- Sofa/estofado: "Esse sofa e para uma casa nova ou vai substituir um que ja tem?"
+- Cama/dormitório: "Esse quarto e para uma casa nova ou e uma renovacao?"
+- Mesa/jantar: "A mesa e para um imovel novo ou esta renovando a sala de jantar?"
+- Guarda-roupa: "E para um quarto novo ou vai trocar um que ja tem?"
+
+Adapte ao produto mencionado. Se o cliente já deixou claro o contexto na conversa, não pergunte — classifique direto. Classifique internamente em: casa_nova, reforma ou troca.
 
 Passo 8 — Verificação de Horário e Registro do Lead
 
