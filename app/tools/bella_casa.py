@@ -308,7 +308,7 @@ async def agendar_visita(
         return '{"success": false, "error": "Loja fechada neste dia."}'
 
     open_time, close_time = hours
-    if not (open_time <= visit_time <= close_time):
+    if not (open_time <= clean_time <= close_time):
         return (
             f'{{"success": false, "error": "Horário fora do funcionamento. '
             f'Neste dia atendemos das {open_time} às {close_time}."}}'
@@ -322,7 +322,7 @@ async def agendar_visita(
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 f"{FIREBASE_URL}/leads/{lead_id}/schedule-visit",
-                json={"visitDate": visit_date, "visitTime": visit_time, "phone": phone, "leadName": name},
+                json={"visitDate": date_with_year, "visitTime": clean_time, "phone": phone, "leadName": name},
                 headers=_headers(),
                 timeout=5,
             )
