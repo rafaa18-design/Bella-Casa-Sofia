@@ -274,17 +274,28 @@ async def agendar_visita(
     """
     from datetime import datetime as dt
 
-    # Normaliza a data: aceita DD/MM ou DD/MM/AAAA, sempre usa o ano atual
     current_year = dt.now(BAHIA_TZ).year
-    date_part = visit_date.strip()
-    # Remove o ano se vier junto (qualquer formato com 4 dígitos no final)
-    date_part = re.sub(r'[/\-]\d{4}$', '', date_part)
-    date_with_year = f"{date_part}/{current_year}"
+
+    # Extrai dia e mês de qualquer string (ex: "12/05", "12/05/2026", "12 de maio")
+    date_match = re.search(r'(\d{1,2})[/\-\.](\d{1,2})', visit_date)
+    if not date_match:
+        return '{"success": false, "error": "Não consegui entender a data. Me informe no formato DD/MM (ex: 15/05)."}'
+    day = date_match.group(1).zfill(2)
+    month = date_match.group(2).zfill(2)
+    date_with_year = f"{day}/{month}/{current_year}"
+
+    # Extrai hora e minuto de qualquer string (ex: "11:00", "11h00", "11h")
+    time_match = re.search(r'(\d{1,2})[:\-h](\d{2})?', visit_time)
+    if not time_match:
+        return '{"success": false, "error": "Não consegui entender o horário. Me informe no formato HH:MM (ex: 10:00)."}'
+    hour = time_match.group(1).zfill(2)
+    minute = (time_match.group(2) or "00").zfill(2)
+    clean_time = f"{hour}:{minute}"
 
     try:
-        visit_dt = dt.strptime(f"{date_with_year} {visit_time}", "%d/%m/%Y %H:%M")
+        visit_dt = dt.strptime(f"{date_with_year} {clean_time}", "%d/%m/%Y %H:%M")
     except ValueError:
-        return '{"success": false, "error": "Formato inválido. Use DD/MM para data e HH:MM para horário."}'
+        return '{"success": false, "error": "Data ou horário inválido. Use DD/MM para data e HH:MM para horário."}'
 
     # Verifica se é domingo (fechado)
     weekday = visit_dt.weekday()
