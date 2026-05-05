@@ -205,8 +205,12 @@ async def _process_message(phone: str, text: str):
         await _send_whatsapp(phone, clean_content)
 
 
-def _parse_uazapi_body(body: dict) -> tuple[str, str, bool]:
-    """Extrai phone, text e fromMe de qualquer formato do UazAPI. Retorna ('','',False) se não reconhecido."""
+def _parse_uazapi_body(body: dict) -> tuple[str, str, bool, bool]:
+    """Extrai phone, text, fromMe e isGroup do payload do UazAPI.
+
+    Retorna: (phone, text, from_me, is_group)
+    Se não reconhecido: ('', '', False, False)
+    """
     import json
 
     logger.info(f'UAZAPI_BODY: {json.dumps(body)[:500]}')
@@ -224,7 +228,8 @@ def _parse_uazapi_body(body: dict) -> tuple[str, str, bool]:
             or msg.get('extendedTextMessage', {}).get('text', '')
             or data.get('body', '')
         )
-        return phone, text, from_me
+        is_group = remote_jid.endswith('@g.us')
+        return phone, text, from_me, is_group
 
     # Formato free.uazapi.com (messageSenderPhone + message.text na raiz)
     # Estrutura: {"BaseUrl":..., "EventType":"messages", "messageSenderPhone":"556...",
@@ -232,9 +237,12 @@ def _parse_uazapi_body(body: dict) -> tuple[str, str, bool]:
     msg_data = body.get('message', {})
     from_me = msg_data.get('fromMe', body.get('fromMe', False))
 
+    # Detecta se a mensagem vem de grupo
+    is_group = bool(msg_data.get('isGroup', False))
+
     # Se é mensagem enviada por nós mesmos, ignorar imediatamente
     if from_me:
-        return '', '', True
+        return '', '', True, is_group
 
     chat_data = body.get('chat', {})
     # Extrai o número do remetente — tenta todos os campos possíveis do free.uazapi.com
@@ -268,23 +276,36 @@ def _parse_uazapi_body(body: dict) -> tuple[str, str, bool]:
             f'msg_keys={list(msg_data.keys())}'
         )
 
-    return phone, text, from_me
+    return phone, text, from_me, is_group
 
 
 async def _handle_webhook(request: Request, background_tasks: BackgroundTasks):
     """Lógica central do webhook — compartilhada entre rotas."""
+    from app.config import settings
+
     try:
         body = await request.json()
     except Exception:
         return {'status': 'invalid_body'}
 
-    phone, text, from_me = _parse_uazapi_body(body)
+    phone, text, from_me, is_group = _parse_uazapi_body(body)
 
     if from_me:
         return {'status': 'ignored'}
 
+    # Ignora mensagens de grupos — bot responde apenas em conversas diretas (DMs)
+    if is_group:
+        logger.debug(f'Mensagem de grupo ignorada: {text[:40]!r}')
+        return {'status': 'ignored_group'}
+
     if not phone or not text:
         return {'status': 'ignored'}
+
+    # Allowlist de números para testes controlados
+    # Defina PHONE_ALLOWLIST=["5561..."] no Railway para limitar quem o bot responde
+    if settings.PHONE_ALLOWLIST and phone not in settings.PHONE_ALLOWLIST:
+        logger.info(f'Número {phone} fora da allowlist — ignorado')
+        return {'status': 'not_in_allowlist'}
 
     logger.info(f'Mensagem recebida de {phone}: {text[:50]}')
     background_tasks.add_task(_process_message, phone, text)
