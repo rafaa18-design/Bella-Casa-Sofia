@@ -142,19 +142,21 @@ async def _send_whatsapp(phone: str, text: str):
     Campos: number (destino) + text (conteúdo)
     Ref: https://docs.uazapi.com/endpoint/post/send~text
     """
-    url = f'{UAZAPI_URL}/send/text'
-    if not UAZAPI_URL or not UAZAPI_TOKEN:
+    token = UAZAPI_TOKEN.strip()
+    base_url = UAZAPI_URL.strip().rstrip('/')
+    url = f'{base_url}/send/text'
+    if not base_url or not token:
         logger.error(
-            f'UAZAPI não configurado! UAZAPI_URL={UAZAPI_URL!r}, UAZAPI_TOKEN={"***" if UAZAPI_TOKEN else "VAZIO"}'
+            f'UAZAPI não configurado! UAZAPI_URL={base_url!r}, UAZAPI_TOKEN={"***" if token else "VAZIO"}'
         )
         return
     try:
-        token_preview = f'{UAZAPI_TOKEN[:6]}...{UAZAPI_TOKEN[-4:]}' if len(UAZAPI_TOKEN) > 10 else '(token curto demais)'
+        token_preview = f'{token[:6]}...{token[-4:]}' if len(token) > 10 else '(token curto demais)'
         logger.info(f'Enviando para {phone} via {url} | token={token_preview}')
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 url,
-                headers={'token': UAZAPI_TOKEN},
+                headers={'token': token},
                 json={'number': phone, 'text': text},
                 timeout=10,
             )
