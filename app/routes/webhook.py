@@ -119,7 +119,13 @@ async def _process_message(phone: str, text: str):
     # Se handoff, response.content é o JSON interno do StopAgentRun — não enviar ao cliente
     raw_content = response.content or ''
     is_system_json = raw_content.strip().startswith('{"handoff"')
-    message_to_send = '' if (handoff_complete and is_system_json) else raw_content
+    farewell = run_context.session_state.get('farewell_message', '')
+    if handoff_complete and is_system_json and farewell:
+        message_to_send = farewell
+    elif handoff_complete and is_system_json:
+        message_to_send = ''
+    else:
+        message_to_send = raw_content
 
     # Aplica limpeza: remove markdown, emojis e perguntas extras
     clean_content = _clean_response(message_to_send) if message_to_send else ''

@@ -413,7 +413,7 @@ async def agendar_visita(
 
 @tool
 def transferir_vendedora(run_context: RunContext) -> str:
-    """Finaliza o atendimento da Valentina e sinaliza o handoff para a vendedora humana.
+    """Finaliza o atendimento da Sofia, envia despedida ao cliente e sinaliza o handoff para a vendedora humana.
 
     Deve ser chamada SEMPRE ao final da qualificação ou ao identificar cliente recorrente.
     """
@@ -423,6 +423,14 @@ def transferir_vendedora(run_context: RunContext) -> str:
     is_open = run_context.session_state.get("is_open", True)
 
     run_context.session_state["handoff_complete"] = True
+
+    first_name = lead_name.split()[0] if lead_name else ""
+    name_part = f"{first_name}, " if first_name else ""
+    run_context.session_state["farewell_message"] = (
+        f"{name_part}obrigada pelo contato com a Bella Casa! "
+        f"A {seller_name} vai assumir seu atendimento agora e te ajudar com tudo que precisar. "
+        f"Ate logo!"
+    )
 
     raise StopAgentRun(
         f'{{"handoff": true, "seller_name": "{seller_name}", '
