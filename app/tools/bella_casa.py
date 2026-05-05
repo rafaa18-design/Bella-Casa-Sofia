@@ -272,17 +272,42 @@ async def agendar_visita(
         visit_date: Data da visita no formato DD/MM/AAAA.
         visit_time: Horário da visita no formato HH:MM (ex: 09:00, 14:30).
     """
-    from datetime import datetime as dt
+    from datetime import datetime as dt, timedelta
 
-    current_year = dt.now(BAHIA_TZ).year
+    now = dt.now(BAHIA_TZ)
+    current_year = now.year
 
-    # Extrai dia e mês de qualquer string (ex: "12/05", "12/05/2026", "12 de maio")
-    date_match = re.search(r'(\d{1,2})[/\-\.](\d{1,2})', visit_date)
-    if not date_match:
-        return '{"success": false, "error": "Não consegui entender a data. Me informe no formato DD/MM (ex: 15/05)."}'
-    day = date_match.group(1).zfill(2)
-    month = date_match.group(2).zfill(2)
-    date_with_year = f"{day}/{month}/{current_year}"
+    # Mapeamento de nomes de dias da semana em português
+    WEEKDAY_PT = {
+        "segunda": 0, "segunda-feira": 0,
+        "terca": 1, "terça": 1, "terca-feira": 1, "terça-feira": 1,
+        "quarta": 2, "quarta-feira": 2,
+        "quinta": 3, "quinta-feira": 3,
+        "sexta": 4, "sexta-feira": 4,
+        "sabado": 5, "sábado": 5, "sabado-feira": 5,
+    }
+
+    normalized_input = visit_date.lower().strip()
+    date_with_year = None
+
+    # Tenta identificar dia da semana
+    for name, wday in WEEKDAY_PT.items():
+        if name in normalized_input:
+            days_ahead = (wday - now.weekday()) % 7
+            if days_ahead == 0:
+                days_ahead = 7  # Próxima semana se for hoje
+            target = now + timedelta(days=days_ahead)
+            date_with_year = f"{str(target.day).zfill(2)}/{str(target.month).zfill(2)}/{current_year}"
+            break
+
+    # Se não encontrou dia da semana, extrai DD/MM numericamente
+    if not date_with_year:
+        date_match = re.search(r'(\d{1,2})[/\-\.](\d{1,2})', visit_date)
+        if not date_match:
+            return '{"success": false, "error": "Não consegui entender a data. Informe DD/MM ou o dia da semana (ex: segunda, terça)."}'
+        day = date_match.group(1).zfill(2)
+        month = date_match.group(2).zfill(2)
+        date_with_year = f"{day}/{month}/{current_year}"
 
     # Extrai hora e minuto de qualquer string (ex: "11:00", "11h00", "11h")
     time_match = re.search(r'(\d{1,2})[:\-h](\d{2})?', visit_time)
