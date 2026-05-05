@@ -57,6 +57,11 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f'Failed to pre-load prompt: {e}')
 
+    # Inactivity monitor for WhatsApp sessions
+    from app.routes.webhook import start_inactivity_monitor
+    start_inactivity_monitor()
+    logger.info('Inactivity monitor started')
+
     logger.info('Application startup complete')
 
     yield

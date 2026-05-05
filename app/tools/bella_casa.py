@@ -408,6 +408,8 @@ async def agendar_visita(
         conflict_msg = data.get("conflict_message", "Horário indisponível.")
         return f'{{"success": false, "error": "{conflict_msg}"}}'
 
+    run_context.session_state["visit_confirmed_date"] = date_with_year
+    run_context.session_state["visit_confirmed_time"] = clean_time
     return '{"success": true, "reminder_scheduled": true}'
 
 
@@ -426,11 +428,21 @@ def transferir_vendedora(run_context: RunContext) -> str:
 
     first_name = lead_name.split()[0] if lead_name else ""
     name_part = f"{first_name}, " if first_name else ""
-    run_context.session_state["farewell_message"] = (
-        f"{name_part}obrigada pelo contato com a Bella Casa! "
-        f"A {seller_name} vai assumir seu atendimento agora e te ajudar com tudo que precisar. "
-        f"Ate logo!"
-    )
+    visit_date = run_context.session_state.get("visit_confirmed_date", "")
+    visit_time = run_context.session_state.get("visit_confirmed_time", "")
+
+    if visit_date and visit_time:
+        farewell = (
+            f"{name_part}sua visita esta confirmada para o dia {visit_date} as {visit_time}. "
+            f"A {seller_name} vai te aguardar na loja. Ate logo!"
+        )
+    else:
+        farewell = (
+            f"{name_part}obrigada pelo contato com a Bella Casa! "
+            f"A {seller_name} vai assumir seu atendimento agora e te ajudar com tudo que precisar. "
+            f"Ate logo!"
+        )
+    run_context.session_state["farewell_message"] = farewell
 
     raise StopAgentRun(
         f'{{"handoff": true, "seller_name": "{seller_name}", '

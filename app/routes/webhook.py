@@ -1,7 +1,9 @@
 """Webhook do UazAPI — entrada de mensagens do WhatsApp para a Valentina."""
+import asyncio
 import logging
 import os
 import re
+from datetime import datetime, timezone
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Request
@@ -20,6 +22,41 @@ UAZAPI_TOKEN = os.getenv('UAZAPI_TOKEN', '')
 
 # Histórico em memória por sessão (substituir por Redis em produção)
 _history: dict[str, list[dict]] = {}
+_last_activity: dict[str, datetime] = {}
+_reminder_sent: set[str] = set()
+
+INACTIVITY_REMINDER_MIN = 10
+INACTIVITY_CLOSE_MIN = 20
+
+
+async def _inactivity_monitor() -> None:
+    """Verifica sessões inativas a cada minuto e envia lembrete ou encerra."""
+    while True:
+        await asyncio.sleep(60)
+        now = datetime.now(timezone.utc)
+        for phone in list(_last_activity.keys()):
+            if phone not in _history:
+                _last_activity.pop(phone, None)
+                _reminder_sent.discard(phone)
+                continue
+            elapsed = (now - _last_activity[phone]).total_seconds() / 60
+            if elapsed >= INACTIVITY_CLOSE_MIN:
+                msg = 'Como nao houve retorno, estamos encerrando seu atendimento. Quando quiser, e so nos chamar!'
+                await _send_whatsapp(phone, msg)
+                await save_conversation_message(phone, '', '', msg, 'encerrado')
+                _history.pop(phone, None)
+                _last_activity.pop(phone, None)
+                _reminder_sent.discard(phone)
+                logger.info(f'Sessao encerrada por inatividade: {phone}')
+            elif elapsed >= INACTIVITY_REMINDER_MIN and phone not in _reminder_sent:
+                msg = 'Ola! Ainda esta por ai? Posso continuar te ajudando com o que precisa na Bella Casa.'
+                await _send_whatsapp(phone, msg)
+                _reminder_sent.add(phone)
+                logger.info(f'Lembrete de inatividade enviado: {phone}')
+
+
+def start_inactivity_monitor() -> None:
+    asyncio.create_task(_inactivity_monitor())
 
 
 class UazapiMessage(BaseModel):
@@ -76,6 +113,8 @@ async def _send_whatsapp(phone: str, text: str):
 
 async def _process_message(phone: str, text: str):
     """Processa a mensagem e gera resposta da Sofia."""
+    _last_activity[phone] = datetime.now(timezone.utc)
+    _reminder_sent.discard(phone)
     history = _history.get(phone, [])
 
     # Se não há histórico em memória (ex: servidor reiniciou), reconstruir do Firestore
@@ -145,6 +184,8 @@ async def _process_message(phone: str, text: str):
     # Se handoff completo, limpa histórico em memória para próxima conversa
     if handoff_complete:
         _history.pop(phone, None)
+        _last_activity.pop(phone, None)
+        _reminder_sent.discard(phone)
 
     if clean_content:
         await _send_whatsapp(phone, clean_content)
