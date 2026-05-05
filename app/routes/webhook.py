@@ -111,7 +111,8 @@ async def _send_whatsapp(phone: str, text: str):
         )
         return
     try:
-        logger.info(f'Enviando para {phone} via {url}')
+        token_preview = f'{UAZAPI_TOKEN[:6]}...{UAZAPI_TOKEN[-4:]}' if len(UAZAPI_TOKEN) > 10 else '(token curto demais)'
+        logger.info(f'Enviando para {phone} via {url} | token={token_preview}')
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 url,
