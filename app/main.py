@@ -49,6 +49,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f'Redis not available: {e}')
 
+    # Limpa cache do prompt no Redis para garantir que sofia.md atualizado seja carregado
+    try:
+        from app.config import settings
+        redis = await get_redis()
+        if redis:
+            prompt_key = f'{settings.AGENT_NAME}:{settings.PROMPT_REDIS_KEY}'
+            await redis.delete(prompt_key)
+            logger.info(f'Prompt cache cleared: {prompt_key}')
+    except Exception as e:
+        logger.warning(f'Failed to clear prompt cache: {e}')
+
     # Pre-load prompt into cache
     try:
         manager = get_prompt_manager()
