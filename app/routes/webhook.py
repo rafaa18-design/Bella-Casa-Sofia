@@ -191,37 +191,67 @@ async def _process_message(phone: str, text: str):
         await _send_whatsapp(phone, clean_content)
 
 
-@router.post('')
-async def webhook(request: Request, background_tasks: BackgroundTasks):
-    """Recebe mensagens do UazAPI e processa em background."""
-    try:
-        body = await request.json()
-    except Exception:
-        return {'status': 'invalid_body'}
+def _parse_uazapi_body(body: dict) -> tuple[str, str, bool]:
+    """Extrai phone, text e fromMe de qualquer formato do UazAPI. Retorna ('','',False) se não reconhecido."""
+    import json
 
-    # Campos da mensagem ficam dentro de body['message']
+    logger.info(f'UAZAPI_BODY: {json.dumps(body)[:500]}')
+
+    # Formato Evolution API / free.uazapi.com
+    data = body.get('data', {})
+    if data:
+        key = data.get('key', {})
+        from_me = key.get('fromMe', False)
+        remote_jid = key.get('remoteJid', '')
+        phone = ''.join(filter(str.isdigit, remote_jid.split('@')[0]))
+        msg = data.get('message', {})
+        text = (
+            msg.get('conversation')
+            or msg.get('extendedTextMessage', {}).get('text', '')
+            or data.get('body', '')
+        )
+        return phone, text, from_me
+
+    # Formato legado / simples
     msg_data = body.get('message', {})
-
-    # Ignora mensagens enviadas pelo próprio número
-    if msg_data.get('fromMe', False):
-        return {'status': 'ignored'}
-
-    # Tenta root primeiro, depois message, depois chat
+    from_me = msg_data.get('fromMe', body.get('fromMe', False))
     chat_data = body.get('chat', {})
     phone = (
         body.get('messageSenderPhone')
         or msg_data.get('senderPhone')
         or chat_data.get('phone', '')
     )
-    # Remove caracteres não numéricos do telefone
     phone = ''.join(filter(str.isdigit, phone))
     text = body.get('text') or msg_data.get('text', '')
-    msg_type = body.get('type') or msg_data.get('type', '')
 
-    if not phone or not text or msg_type != 'text':
+    return phone, text, from_me
+
+
+async def _handle_webhook(request: Request, background_tasks: BackgroundTasks):
+    """Lógica central do webhook — compartilhada entre rotas."""
+    try:
+        body = await request.json()
+    except Exception:
+        return {'status': 'invalid_body'}
+
+    phone, text, from_me = _parse_uazapi_body(body)
+
+    if from_me:
+        return {'status': 'ignored'}
+
+    if not phone or not text:
         return {'status': 'ignored'}
 
     logger.info(f'Mensagem recebida de {phone}: {text[:50]}')
     background_tasks.add_task(_process_message, phone, text)
-
     return {'status': 'processing'}
+
+
+@router.post('')
+async def webhook(request: Request, background_tasks: BackgroundTasks):
+    return await _handle_webhook(request, background_tasks)
+
+
+@router.post('/messages/{message_type}')
+async def webhook_typed(message_type: str, request: Request, background_tasks: BackgroundTasks):
+    return await _handle_webhook(request, background_tasks)
