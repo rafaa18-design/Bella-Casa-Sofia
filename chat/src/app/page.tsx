@@ -1361,10 +1361,21 @@ function ChatScreen({ token, dark, c, onToggleTheme }: {
       if (data.metrics) debugData.metrics = data.metrics;
       if (data.prompt_debug) debugData.prompt_debug = data.prompt_debug;
 
+      // Se for JSON de handoff, extrai farewell e não exibe o JSON bruto
+      let msgContent = fo.message || "(sem resposta)";
+      if (msgContent.trim().startsWith('{"handoff"')) {
+        try {
+          const handoff = JSON.parse(msgContent);
+          msgContent = handoff.farewell || "Obrigada pelo contato! Até logo!";
+        } catch {
+          msgContent = "Obrigada pelo contato! Até logo!";
+        }
+      }
+
       setMessages((prev) => [...prev, {
         id: uuid(),
         role: "agent",
-        content: fo.message || "(sem resposta)",
+        content: msgContent,
         actions: fo.actions_taken,
         metrics: data.metrics,
         debugData: Object.keys(debugData).length > 0 ? debugData : undefined,
@@ -1697,26 +1708,10 @@ export default function Home() {
     document.documentElement.style.background = c.bg;
   }, [c.bg]);
 
-  // Auto-login on mount
+  // Auth desabilitado no servidor (AUTH_ENABLED=false) — token não é verificado
   useEffect(() => {
-    if (token) return;
-    (async () => {
-      try {
-        const res = await fetch(
-          `${API}/auth/login?username=${encodeURIComponent(AUTH_USER)}&password=${encodeURIComponent(AUTH_PASS)}`,
-          { method: "POST" },
-        );
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          throw new Error(body.detail || `Auth failed: ${res.status}`);
-        }
-        const data = await res.json();
-        setToken(data.access_token);
-      } catch (err: unknown) {
-        setAuthError(err instanceof Error ? err.message : "Falha na autenticação");
-      }
-    })();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    setToken("no-auth-required");
+  }, []);
 
   if (authError) {
     return (

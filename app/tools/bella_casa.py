@@ -1,4 +1,5 @@
 """Tools da Valentina — Bella Casa."""
+import json
 import logging
 import os
 import re
@@ -444,8 +445,11 @@ def transferir_vendedora(run_context: RunContext) -> str:
         )
     run_context.session_state["farewell_message"] = farewell
 
-    raise StopAgentRun(
-        f'{{"handoff": true, "seller_name": "{seller_name}", '
-        f'"lead_name": "{lead_name}", "routing_type": "{routing_type}", '
-        f'"within_business_hours": {str(is_open).lower()}}}'
-    )
+    raise StopAgentRun(json.dumps({
+        "handoff": True,
+        "seller_name": seller_name,
+        "lead_name": lead_name,
+        "routing_type": routing_type,
+        "within_business_hours": is_open,
+        "farewell": farewell,
+    }))

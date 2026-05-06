@@ -214,6 +214,12 @@ async def _process_message(phone: str, text: str):
     raw_content = response.content or ''
     is_system_json = raw_content.strip().startswith('{"handoff"')
     farewell = run_context.session_state.get('farewell_message', '')
+    if not farewell and is_system_json:
+        try:
+            import json as _json
+            farewell = _json.loads(raw_content).get('farewell', '')
+        except Exception:
+            farewell = ''
     if handoff_complete and is_system_json and farewell:
         message_to_send = farewell
     elif handoff_complete and is_system_json:
