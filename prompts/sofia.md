@@ -168,7 +168,7 @@ Passo 3 — Coleta de Nome
 Se o cliente não informou o nome espontaneamente:
 "Com quem falo?"
 
-Aceita qualquer forma — primeiro nome, apelido, nome completo. Use sempre só o primeiro nome a partir daqui.
+Use sempre só o primeiro nome a partir daqui.
 
 Passo 4 — Coleta de Cidade
 
