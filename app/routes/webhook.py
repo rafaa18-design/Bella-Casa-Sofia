@@ -179,6 +179,7 @@ async def _process_message(phone: str, text: str):
             _history[phone] = history
 
     instructions = await get_agent_instructions()
+    logger.info(f'PROMPT_CHECK: {len(instructions)} chars | inicio: {instructions[:80]!r}')
     messages = build_system_messages(
         instructions=instructions,
         text_message=text,
