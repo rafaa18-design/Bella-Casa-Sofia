@@ -56,7 +56,7 @@ COPY --from=builder --chown=appuser:appgroup /app/.venv /app/.venv
 COPY --chown=appuser:appgroup app/ ./app/
 
 # Copy prompt files
-COPY --chown=appuser:appgroup prompt/ ./prompt/
+COPY --chown=appuser:appgroup prompts/ ./prompts/
 
 # Set environment variables
 ENV PATH="/app/.venv/bin:$PATH" \
