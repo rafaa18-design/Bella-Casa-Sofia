@@ -380,6 +380,18 @@ async def run_agent_loop(
         # If no tool calls, we have the final response
         if not message.tool_calls:
             content = message.content or ''
+            # LLM returned empty after executing tools — force it to respond
+            if not content and tools_used and not is_last_iteration:
+                logger.warning(
+                    'Empty content after tool execution at iteration %d — forcing response',
+                    iteration,
+                )
+                messages.append({'role': 'assistant', 'content': ''})
+                messages.append({
+                    'role': 'user',
+                    'content': 'Responda ao cliente agora com base nos dados já obtidos.',
+                })
+                continue
             return AgentResponse(
                 content=content,
                 messages=messages,

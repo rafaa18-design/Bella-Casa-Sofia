@@ -19,7 +19,7 @@ from starlette.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.middleware import JWTAuthMiddleware, RequestIDMiddleware, SecurityHeadersMiddleware
 from app.observability import get_langfuse, get_logger, setup_langfuse_env, setup_logging, setup_tracing, shutdown_langfuse, shutdown_tracing
-from app.routes import agentbench_router, auth_router, firebase_router, prompt_router, system_router
+from app.routes import agentbench_router, auth_router, firebase_router, prompt_router, reminders_router, system_router, webhook_router
 from app.storage import close_redis, get_redis
 
 # Setup logging early (must be before other app imports that use loggers)
@@ -68,6 +68,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f'Failed to pre-load prompt: {e}')
 
+
+    # Inicia agendador de lembretes automáticos
+    try:
+        from app.scheduler import start_scheduler
+        start_scheduler()
+    except Exception as e:
+        logger.warning(f'Agendador não iniciado: {e}')
 
     logger.info('Application startup complete')
 
@@ -125,6 +132,8 @@ app.include_router(auth_router)
 app.include_router(prompt_router)
 app.include_router(system_router)
 app.include_router(firebase_router)
+app.include_router(reminders_router)
+app.include_router(webhook_router)
 
 # --- Middlewares ---
 # (Order matters: first added = outermost = runs first on request)

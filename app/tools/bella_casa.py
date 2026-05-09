@@ -122,16 +122,24 @@ def verificar_horario(run_context: RunContext) -> str:
     now = datetime.now(BAHIA_TZ)
     weekday = now.weekday()
     current_time = now.strftime("%H:%M")
+    hour = now.hour
     hours = BUSINESS_HOURS.get(weekday)
 
+    if 5 <= hour < 12:
+        saudacao = "Bom dia"
+    elif 12 <= hour < 18:
+        saudacao = "Boa tarde"
+    else:
+        saudacao = "Boa noite"
+
     if hours is None:
-        # Domingo — próxima abertura é segunda às 08h
         next_day = (weekday + 1) % 7
         while BUSINESS_HOURS.get(next_day) is None:
             next_day = (next_day + 1) % 7
         next_open, _ = BUSINESS_HOURS[next_day]
         return (
             f'{{"is_open": false, "current_time": "{current_time}", '
+            f'"saudacao": "{saudacao}", '
             f'"reason": "Fechado aos domingos", '
             f'"next_opening": "{DAY_NAMES[next_day]} às {next_open}"}}'
         )
@@ -140,9 +148,8 @@ def verificar_horario(run_context: RunContext) -> str:
     is_open = open_time <= current_time <= close_time
 
     if is_open:
-        return f'{{"is_open": true, "current_time": "{current_time}"}}'
+        return f'{{"is_open": true, "current_time": "{current_time}", "saudacao": "{saudacao}"}}'
 
-    # Fora do horário — calcular próxima abertura
     if current_time < open_time:
         next_opening = f"hoje às {open_time}"
     else:
@@ -154,6 +161,7 @@ def verificar_horario(run_context: RunContext) -> str:
 
     return (
         f'{{"is_open": false, "current_time": "{current_time}", '
+        f'"saudacao": "{saudacao}", '
         f'"next_opening": "{next_opening}"}}'
     )
 
@@ -272,11 +280,20 @@ async def distribuir_vendedora(
             )
     except Exception as e:
         logger.error(f"distribuir_vendedora HTTP error: {e}")
-        return '{"success": true, "seller_name": "nossa equipe"}'
+        return f'{{"success": false, "error": "Falha ao conectar: {e}"}}'
+
+    if resp.status_code != 200:
+        logger.error(f"distribuir_vendedora status {resp.status_code}: {resp.text[:300]}")
+        return f'{{"success": false, "error": "HTTP {resp.status_code}: {resp.text[:200]}"}}'
 
     data = resp.json()
-    seller_name = data.get("sellerName", "nossa equipe")
+    seller_name = data.get("sellerName", "")
+    if not seller_name:
+        logger.error(f"distribuir_vendedora: sellerName vazio na resposta: {data}")
+        return '{"success": false, "error": "sellerName vazio na resposta"}'
+
     run_context.session_state["assigned_seller_name"] = seller_name
+    logger.info(f"distribuir_vendedora: lead={lead_id} atribuído a {seller_name}")
     return f'{{"success": true, "seller_name": "{seller_name}"}}'
 
 
@@ -313,15 +330,23 @@ async def agendar_visita(
     normalized_input = visit_date.lower().strip()
     date_with_year = None
 
+    # Trata "amanhã" e "hoje" diretamente
+    if any(p in normalized_input for p in ('amanha', 'amanhã', 'tomorrow')):
+        target = now + timedelta(days=1)
+        date_with_year = f"{str(target.day).zfill(2)}/{str(target.month).zfill(2)}/{current_year}"
+    elif 'hoje' in normalized_input or 'today' in normalized_input:
+        date_with_year = f"{str(now.day).zfill(2)}/{str(now.month).zfill(2)}/{current_year}"
+
     # Tenta identificar dia da semana
-    for name, wday in WEEKDAY_PT.items():
-        if name in normalized_input:
-            days_ahead = (wday - now.weekday()) % 7
-            if days_ahead == 0:
-                days_ahead = 7  # Próxima semana se for hoje
-            target = now + timedelta(days=days_ahead)
-            date_with_year = f"{str(target.day).zfill(2)}/{str(target.month).zfill(2)}/{current_year}"
-            break
+    if not date_with_year:
+        for name, wday in WEEKDAY_PT.items():
+            if name in normalized_input:
+                days_ahead = (wday - now.weekday()) % 7
+                if days_ahead == 0:
+                    days_ahead = 7
+                target = now + timedelta(days=days_ahead)
+                date_with_year = f"{str(target.day).zfill(2)}/{str(target.month).zfill(2)}/{current_year}"
+                break
 
     # Se não encontrou dia da semana, extrai DD/MM numericamente
     if not date_with_year:

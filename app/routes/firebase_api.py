@@ -141,16 +141,17 @@ async def schedule_visit(
     visit_dt = datetime.strptime(f"{payload.visitDate} {payload.visitTime}", '%d/%m/%Y %H:%M')
     logger.info(f"schedule_visit: lead={lead_id} date={payload.visitDate} time={payload.visitTime}")
 
-    # Verifica conflitos com intervalo de 30 minutos
+    # Verifica conflitos com intervalo de 30 minutos (exclui o próprio lead no reagendamento)
     try:
         day_start = visit_dt.replace(hour=0, minute=0, second=0, microsecond=0)
         day_end = visit_dt.replace(hour=23, minute=59, second=59)
         existing = db.collection('leads').where('visitDate', '>=', day_start).where('visitDate', '<=', day_end).stream()
         for doc in existing:
+            if doc.id == lead_id:
+                continue  # Ignora o próprio lead no reagendamento
             data = doc.to_dict()
             existing_dt = data.get('visitDate')
             if existing_dt:
-                # Normaliza timezone: converte Firestore Timestamp para naive se necessário
                 if hasattr(existing_dt, 'tzinfo') and existing_dt.tzinfo is not None:
                     existing_dt = existing_dt.replace(tzinfo=None)
                 diff = abs((visit_dt - existing_dt).total_seconds()) / 60
@@ -176,14 +177,24 @@ async def schedule_visit(
         'updatedAt': datetime.utcnow(),
     })
 
-    db.collection('reminders').add({
+    # Atualiza reminder existente (reagendamento) ou cria novo
+    existing_reminders = list(
+        db.collection('reminders').where('leadId', '==', lead_id).stream()
+    )
+    reminder_data = {
         'leadId': lead_id,
         'phone': payload.phone,
         'leadName': payload.leadName,
         'visitDate': visit_dt,
         'reminderScheduledFor': reminder_dt,
         'sent': False,
-    })
+    }
+    if existing_reminders:
+        existing_reminders[0].reference.update(reminder_data)
+        logger.info(f"schedule_visit: reminder atualizado para lead={lead_id}")
+    else:
+        db.collection('reminders').add(reminder_data)
+        logger.info(f"schedule_visit: reminder criado para lead={lead_id}")
 
     logger.info(f"schedule_visit: agendado com sucesso lead={lead_id}")
     return {'success': True}

@@ -313,6 +313,24 @@ async def execute_agent(
         # Get session state from Redis
         session_state = await get_session_state(conversation_id)
 
+        # Injeta phone no session_state para compatibilidade com as tools da Bella Casa
+        if 'phone' not in session_state:
+            session_state['phone'] = conversation_id
+
+        # Bloqueia resposta se handoff já foi concluído nesta sessão
+        if session_state.get('handoff_complete'):
+            logger.info(f'Handoff já concluído para {conversation_id} — sem resposta')
+            return AgentRunResult(
+                response=None,
+                instructions='',
+                session_state=session_state,
+                latency_ms=0,
+                input_tokens=0,
+                output_tokens=0,
+                text_message=text_message,
+                actions=[],
+            )
+
         t0 = time.perf_counter()
         template = await get_agent_instructions()
         t1 = time.perf_counter()
@@ -329,9 +347,16 @@ async def execute_agent(
         # Format full context (memory + session state)
         full_context = formatar_contexto_completo(session_state, memory_context)
 
+        # Saudação baseada no horário de Brasília
+        from zoneinfo import ZoneInfo
+        from datetime import datetime as _dt
+        _hora = _dt.now(ZoneInfo("America/Bahia")).hour
+        _saudacao = "Bom dia" if 5 <= _hora < 12 else "Boa tarde" if 12 <= _hora < 18 else "Boa noite"
+
         instructions = compile_prompt(
             template,
             session_context=full_context,
+            saudacao=_saudacao,
         )
 
         # Build litellm model string

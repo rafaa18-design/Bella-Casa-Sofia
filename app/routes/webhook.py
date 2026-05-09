@@ -24,6 +24,7 @@ UAZAPI_TOKEN = os.getenv('UAZAPI_TOKEN', '')
 _history: dict[str, list[dict]] = {}
 _last_activity: dict[str, datetime] = {}
 _reminder_sent: set[str] = set()
+_handoff_complete: set[str] = set()  # Telefones com handoff concluído — não respondem mais
 
 INACTIVITY_REMINDER_MIN = 10
 INACTIVITY_CLOSE_MIN = 20
@@ -178,7 +179,13 @@ async def _process_message(phone: str, text: str):
             logger.info(f'Histórico reconstruído do Firestore para {phone}: {len(history)} mensagens')
             _history[phone] = history
 
-    instructions = await get_agent_instructions()
+    raw_instructions = await get_agent_instructions()
+    from app.prompt_manager import compile_prompt
+    from zoneinfo import ZoneInfo
+    from datetime import datetime as _dt
+    _hora = _dt.now(ZoneInfo("America/Bahia")).hour
+    _saudacao = "Bom dia" if 5 <= _hora < 12 else "Boa tarde" if 12 <= _hora < 18 else "Boa noite"
+    instructions = compile_prompt(raw_instructions, saudacao=_saudacao)
     logger.info(f'PROMPT_CHECK: {len(instructions)} chars | inicio: {instructions[:80]!r}')
     messages = build_system_messages(
         instructions=instructions,
@@ -242,11 +249,12 @@ async def _process_message(phone: str, text: str):
     lead_id = run_context.session_state.get('lead_id', '')
     await save_conversation_message(phone, lead_id, text, clean_content or '[handoff]', stage)
 
-    # Se handoff completo, limpa histórico em memória para próxima conversa
+    # Se handoff completo, limpa histórico e marca para não responder mais
     if handoff_complete:
         _history.pop(phone, None)
         _last_activity.pop(phone, None)
         _reminder_sent.discard(phone)
+        _handoff_complete.add(phone)
 
     if clean_content:
         await _send_whatsapp(phone, clean_content)
@@ -353,6 +361,10 @@ async def _handle_webhook(request: Request, background_tasks: BackgroundTasks):
     if settings.PHONE_ALLOWLIST and phone not in settings.PHONE_ALLOWLIST:
         logger.info(f'Número {phone} fora da allowlist — ignorado')
         return {'status': 'not_in_allowlist'}
+
+    if phone in _handoff_complete:
+        logger.info(f'Handoff já concluído para {phone} — mensagem ignorada')
+        return {'status': 'handoff_complete'}
 
     logger.info(f'Mensagem recebida de {phone}: {text[:50]}')
     background_tasks.add_task(_process_message, phone, text)
