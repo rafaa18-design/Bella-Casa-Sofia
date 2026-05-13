@@ -317,11 +317,32 @@ async def execute_agent(
         if 'phone' not in session_state:
             session_state['phone'] = conversation_id
 
-        # Bloqueia resposta se handoff já foi concluído nesta sessão
+        # Handoff concluído — responde que a vendedora entrará em contato
         if session_state.get('handoff_complete'):
-            logger.info(f'Handoff já concluído para {conversation_id} — sem resposta')
+            seller = session_state.get('assigned_seller_name', '')
+            if not seller:
+                try:
+                    import httpx as _httpx
+                    from app.tools.bella_casa import FIREBASE_URL, _headers
+                    phone = session_state.get('phone', conversation_id)
+                    async with _httpx.AsyncClient() as _c:
+                        _r = await _c.get(f'{FIREBASE_URL}/leads/by-phone/{phone}', headers=_headers(), timeout=5)
+                    if _r.status_code == 200:
+                        seller = _r.json().get('sellerName', '')
+                except Exception:
+                    seller = ''
+            if seller:
+                followup_msg = f'A {seller} ja esta ciente do seu atendimento e entrara em contato com voce em breve pelo WhatsApp.'
+            else:
+                followup_msg = 'Sua vendedora ja esta ciente do seu atendimento e entrara em contato com voce em breve pelo WhatsApp.'
+            logger.info(f'Pós-handoff para {conversation_id}: enviando mensagem de espera')
+            followup_response = AgentResponse(
+                content=followup_msg,
+                messages=[],
+                session_state=session_state,
+            )
             return AgentRunResult(
-                response=None,
+                response=followup_response,
                 instructions='',
                 session_state=session_state,
                 latency_ms=0,

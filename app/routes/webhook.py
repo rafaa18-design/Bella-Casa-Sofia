@@ -24,7 +24,30 @@ UAZAPI_TOKEN = os.getenv('UAZAPI_TOKEN', '')
 _history: dict[str, list[dict]] = {}
 _last_activity: dict[str, datetime] = {}
 _reminder_sent: set[str] = set()
-_handoff_complete: set[str] = set()  # Telefones com handoff concluído — não respondem mais
+_handoff_complete: set[str] = set()  # Cache local rápido (mesma sessão)
+_handoff_seller: dict[str, str] = {}  # Cache local do nome da vendedora
+
+HANDOFF_TTL = 60 * 60 * 24  # 24 horas em segundos
+
+
+async def _set_handoff_redis(phone: str, seller: str) -> None:
+    """Persiste handoff no Redis com TTL de 24h."""
+    from app.storage import get_redis
+    r = await get_redis()
+    if r:
+        await r.setex(f'handoff:{phone}', HANDOFF_TTL, seller or '__done__')
+
+
+async def _get_handoff_seller_redis(phone: str) -> str | None:
+    """Retorna nome da vendedora do Redis, ou None se não houver handoff."""
+    from app.storage import get_redis
+    r = await get_redis()
+    if not r:
+        return None
+    val = await r.get(f'handoff:{phone}')
+    if val is None:
+        return None
+    return '' if val == '__done__' else val
 
 INACTIVITY_REMINDER_MIN = 10
 INACTIVITY_CLOSE_MIN = 20
@@ -255,6 +278,10 @@ async def _process_message(phone: str, text: str):
         _last_activity.pop(phone, None)
         _reminder_sent.discard(phone)
         _handoff_complete.add(phone)
+        seller = run_context.session_state.get('assigned_seller_name', '')
+        if seller:
+            _handoff_seller[phone] = seller
+        await _set_handoff_redis(phone, seller)
 
     if clean_content:
         await _send_whatsapp(phone, clean_content)
@@ -362,9 +389,26 @@ async def _handle_webhook(request: Request, background_tasks: BackgroundTasks):
         logger.info(f'Número {phone} fora da allowlist — ignorado')
         return {'status': 'not_in_allowlist'}
 
-    if phone in _handoff_complete:
-        logger.info(f'Handoff já concluído para {phone} — mensagem ignorada')
-        return {'status': 'handoff_complete'}
+    # Checa cache local; se não tiver, consulta Redis (sobrevive a reinicializações)
+    is_handoff = phone in _handoff_complete
+    seller_name = _handoff_seller.get(phone, '')
+    if not is_handoff:
+        redis_seller = await _get_handoff_seller_redis(phone)
+        if redis_seller is not None:
+            is_handoff = True
+            seller_name = redis_seller
+            _handoff_complete.add(phone)
+            if redis_seller:
+                _handoff_seller[phone] = redis_seller
+
+    if is_handoff:
+        if seller_name:
+            msg = f'A {seller_name} ja esta ciente do seu atendimento e entrara em contato com voce em breve pelo WhatsApp.'
+        else:
+            msg = 'Sua vendedora ja esta ciente do seu atendimento e entrara em contato com voce em breve pelo WhatsApp.'
+        background_tasks.add_task(_send_whatsapp, phone, msg)
+        logger.info(f'Pós-handoff: mensagem de espera enviada para {phone}')
+        return {'status': 'handoff_followup'}
 
     logger.info(f'Mensagem recebida de {phone}: {text[:50]}')
     background_tasks.add_task(_process_message, phone, text)
