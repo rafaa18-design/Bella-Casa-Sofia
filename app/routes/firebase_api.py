@@ -201,6 +201,149 @@ async def schedule_visit(
 
 
 # ---------------------------------------------------------------------------
+# Sellers — cadastro e exclusão
+# ---------------------------------------------------------------------------
+
+_firebase_admin_app = None
+
+
+def _get_admin_app():
+    """Inicializa o Firebase Admin SDK (singleton)."""
+    global _firebase_admin_app
+    import firebase_admin
+    from firebase_admin import credentials as fb_creds
+    if _firebase_admin_app is None:
+        cred = fb_creds.Certificate({
+            'type': 'service_account',
+            'project_id': os.getenv('FIREBASE_ADMIN_PROJECT_ID'),
+            'private_key': os.getenv('FIREBASE_ADMIN_PRIVATE_KEY', '').replace('\\n', '\n'),
+            'client_email': os.getenv('FIREBASE_ADMIN_CLIENT_EMAIL'),
+            'token_uri': 'https://oauth2.googleapis.com/token',
+        })
+        try:
+            _firebase_admin_app = firebase_admin.get_app('sellers')
+        except ValueError:
+            _firebase_admin_app = firebase_admin.initialize_app(cred, name='sellers')
+    return _firebase_admin_app
+
+
+class SellerPayload(BaseModel):
+    name: str
+    email: str
+    whatsappNumber: str
+
+
+@router.post('/sellers')
+async def create_seller(
+    payload: SellerPayload,
+    authorization: str | None = Header(default=None),
+):
+    """Cadastra nova vendedora: cria no Firebase Auth, Firestore e round-robin."""
+    _check_token(authorization)
+    from firebase_admin import auth as fb_auth
+    import secrets
+
+    app = _get_admin_app()
+    db = _get_db()
+
+    # 1. Cria usuário no Firebase Auth com senha temporária
+    temp_password = secrets.token_urlsafe(12)
+    try:
+        user = fb_auth.create_user(
+            email=payload.email,
+            display_name=payload.name,
+            password=temp_password,
+            app=app,
+        )
+    except fb_auth.EmailAlreadyExistsError:
+        raise HTTPException(status_code=409, detail='E-mail já cadastrado no Firebase Auth.')
+    except Exception as e:
+        logger.error(f'create_seller: erro ao criar usuário no Auth: {e}')
+        raise HTTPException(status_code=500, detail=f'Erro ao criar usuário: {e}')
+
+    # 2. Gera link de redefinição de senha para a vendedora
+    try:
+        reset_link = fb_auth.generate_password_reset_link(payload.email, app=app)
+    except Exception:
+        reset_link = ''
+
+    # 3. Cria documento no Firestore
+    now = datetime.utcnow()
+    seller_data = {
+        'name': payload.name,
+        'email': payload.email,
+        'whatsappNumber': payload.whatsappNumber,
+        'isActive': True,
+        'totalLeadsAssigned': 0,
+        'createdAt': now,
+    }
+    seller_ref = db.collection('sellers').document(user.uid)
+    seller_ref.set(seller_data)
+
+    # 4. Adiciona ao round-robin
+    try:
+        control_ref = db.collection('roundRobin').document('control')
+        control = control_ref.get()
+        if control.exists:
+            current = control.to_dict().get('sellers', [])
+            if user.uid not in current:
+                control_ref.update({'sellers': current + [user.uid]})
+        else:
+            control_ref.set({'sellers': [user.uid], 'currentIndex': 0})
+    except Exception as e:
+        logger.warning(f'create_seller: erro ao atualizar round-robin: {e}')
+
+    logger.info(f'create_seller: vendedora criada uid={user.uid} email={payload.email}')
+    return {
+        'id': user.uid,
+        'name': payload.name,
+        'email': payload.email,
+        'resetLink': reset_link,
+    }
+
+
+@router.delete('/sellers/{seller_id}')
+async def delete_seller(
+    seller_id: str,
+    authorization: str | None = Header(default=None),
+):
+    """Exclui vendedora do Firebase Auth, Firestore e round-robin."""
+    _check_token(authorization)
+    from firebase_admin import auth as fb_auth
+
+    app = _get_admin_app()
+    db = _get_db()
+
+    # 1. Remove do Firebase Auth
+    try:
+        fb_auth.delete_user(seller_id, app=app)
+    except fb_auth.UserNotFoundError:
+        logger.warning(f'delete_seller: usuário {seller_id} não encontrado no Auth (continuando)')
+    except Exception as e:
+        logger.error(f'delete_seller: erro ao remover do Auth: {e}')
+        raise HTTPException(status_code=500, detail=f'Erro ao remover usuário: {e}')
+
+    # 2. Remove do Firestore
+    db.collection('sellers').document(seller_id).delete()
+
+    # 3. Remove do round-robin
+    try:
+        control_ref = db.collection('roundRobin').document('control')
+        control = control_ref.get()
+        if control.exists:
+            sellers = control.to_dict().get('sellers', [])
+            if seller_id in sellers:
+                sellers.remove(seller_id)
+                new_idx = min(control.to_dict().get('currentIndex', 0), max(len(sellers) - 1, 0))
+                control_ref.update({'sellers': sellers, 'currentIndex': new_idx})
+    except Exception as e:
+        logger.warning(f'delete_seller: erro ao atualizar round-robin: {e}')
+
+    logger.info(f'delete_seller: vendedora removida uid={seller_id}')
+    return {'success': True}
+
+
+# ---------------------------------------------------------------------------
 # Conversations — chamado internamente pelo webhook
 # ---------------------------------------------------------------------------
 
