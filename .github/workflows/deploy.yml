@@ -1,0 +1,57 @@
+name: Deploy IA to Cloud Run
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT_ID: bella-casa-asani
+  REGION: us-central1
+  SERVICE: bella-casa-ia
+  REGISTRY: us-central1-docker.pkg.dev/bella-casa-asani/bella-casa
+  IMAGE: ia
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/310428083469/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: github-deploy@bella-casa-asani.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+      - name: Build and push
+        run: |
+          docker build -t $REGISTRY/$IMAGE:${{ github.sha }} -t $REGISTRY/$IMAGE:latest .
+          docker push $REGISTRY/$IMAGE:${{ github.sha }}
+          docker push $REGISTRY/$IMAGE:latest
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy $SERVICE \
+            --image=$REGISTRY/$IMAGE:${{ github.sha }} \
+            --region=$REGION \
+            --project=$PROJECT_ID \
+            --service-account=bella-casa-runtime@bella-casa-asani.iam.gserviceaccount.com \
+            --set-secrets=JWT_SECRET=jwt-secret:latest,AUTH_USERS=auth-users:latest,GEMINI_API_KEY=gemini-api-key:latest,LANGFUSE_PUBLIC_KEY=langfuse-public-key:latest,LANGFUSE_SECRET_KEY=langfuse-secret-key:latest,REDIS_URL=redis-url:latest,UAZAPI_TOKEN=uazapi-token:latest \
+            --set-env-vars=MODULE_ID=bella-casa-ia,MODEL_PROVIDER=google,DEFAULT_MODEL=gemini-3-flash-preview,AGENT_PROMPT_NAME=bella-casa-prompt,AGENT_PROMPT_LABEL=production,LOG_FORMAT=json \
+            --port=8000 \
+            --memory=1Gi \
+            --cpu=1 \
+            --max-instances=10 \
+            --min-instances=1 \
+            --concurrency=20 \
+            --cpu-boost \
+            --allow-unauthenticated
