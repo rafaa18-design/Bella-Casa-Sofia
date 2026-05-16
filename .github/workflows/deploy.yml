@@ -45,8 +45,9 @@ jobs:
             --region=$REGION \
             --project=$PROJECT_ID \
             --service-account=bella-casa-runtime@bella-casa-asani.iam.gserviceaccount.com \
-            --set-secrets=JWT_SECRET=jwt-secret:latest,AUTH_USERS=auth-users:latest,GEMINI_API_KEY=gemini-api-key:latest,LANGFUSE_PUBLIC_KEY=langfuse-public-key:latest,LANGFUSE_SECRET_KEY=langfuse-secret-key:latest,REDIS_URL=redis-url:latest,UAZAPI_TOKEN=uazapi-token:latest \
-            --set-env-vars=MODULE_ID=bella-casa-ia,MODEL_PROVIDER=google,DEFAULT_MODEL=gemini-3-flash-preview,AGENT_PROMPT_NAME=bella-casa-prompt,AGENT_PROMPT_LABEL=production,LOG_FORMAT=json \
+            --set-secrets=JWT_SECRET=jwt-secret:latest,AUTH_USERS=auth-users:latest,GEMINI_API_KEY=gemini-api-key:latest,LANGFUSE_PUBLIC_KEY=langfuse-public-key:latest,LANGFUSE_SECRET_KEY=langfuse-secret-key:latest,REDIS_URL=redis-url:latest,UAZAPI_TOKEN=uazapi-token:latest,UAZAPI_URL=uazapi-base-url:latest,DATABASE_URL=bc-data-database-url:latest,FIREBASE_ADMIN_TOKEN=internal-api-token:latest \
+            --vpc-connector=bellacasa-connector --vpc-egress=private-ranges-only \
+            --set-env-vars=MODULE_ID=bella-casa-ia,MODEL_PROVIDER=google,DEFAULT_MODEL=gemini-3-flash-preview,AGENT_PROMPT_NAME=bella-casa-prompt,AGENT_PROMPT_LABEL=production,LOG_FORMAT=json,LANGFUSE_ENABLED=false \
             --port=8000 \
             --memory=1Gi \
             --cpu=1 \
