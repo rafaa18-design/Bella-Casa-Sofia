@@ -81,12 +81,16 @@ def _normalize_phone(raw: str) -> str:
 def _is_phone_allowed(conversation_id: str) -> bool:
     """Check if conversation_id matches the phone allowlist.
 
-    Returns True if allowlist is empty (no restriction) or if the
-    normalized phone matches any entry in the allowlist.
+    Returns True if allowlist is empty (no restriction), if the
+    normalized phone matches any entry in the allowlist, or if the
+    conversation_id is not a real WhatsApp phone (AgentBench test
+    chat, UUIDs, etc. — anything that normalizes to < 10 digits).
     """
     if not settings.PHONE_ALLOWLIST:
         return True
     normalized = _normalize_phone(conversation_id)
+    if len(normalized) < 10:
+        return True
     for allowed in settings.PHONE_ALLOWLIST:
         if _normalize_phone(allowed) == normalized:
             return True
