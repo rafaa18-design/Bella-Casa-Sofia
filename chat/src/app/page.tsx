@@ -1259,8 +1259,8 @@ function ChatScreen({ token, dark, c, onToggleTheme }: {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [attachedFile, setAttachedFile] = useState<AttachedFile | null>(null);
-  const [testPhone, setTestPhone] = useState("557598888888");
-  const conversationId = useRef(testPhone || uuid());
+  const [testPhone, setTestPhone] = useState("");
+  const conversationId = useRef(uuid());
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1483,7 +1483,7 @@ function ChatScreen({ token, dark, c, onToggleTheme }: {
                 conversationId.current = e.target.value || uuid();
                 setMessages([]);
               }}
-              placeholder="557598888888"
+              placeholder="vazio = UUID isolado"
               style={{
                 fontSize: 12,
                 padding: "4px 8px",
@@ -1735,11 +1735,6 @@ export default function Home() {
     document.documentElement.style.background = c.bg;
   }, [c.bg]);
 
-  // Auth desabilitado no servidor (AUTH_ENABLED=false) — token não é verificado
-  useEffect(() => {
-    setToken("no-auth-required");
-  }, []);
-
   if (authError) {
     return (
       <div style={{
@@ -1758,18 +1753,15 @@ export default function Home() {
     );
   }
 
+  // Login server-side via /api proxy — sem tela de login
+  useEffect(() => {
+    setToken("server-injected");
+  }, []);
+
   if (!token) {
     return (
-      <div style={{
-        display: "flex",
-        minHeight: "100dvh",
-        alignItems: "center",
-        justifyContent: "center",
-        background: c.bg,
-        color: c.textSecondary,
-        fontSize: 14,
-      }}>
-        Conectando...
+      <div style={{ display: "flex", minHeight: "100dvh", alignItems: "center", justifyContent: "center", background: c.bg, color: c.textSecondary, fontSize: 14 }}>
+        Carregando...
       </div>
     );
   }
