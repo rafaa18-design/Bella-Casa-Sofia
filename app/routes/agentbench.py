@@ -83,20 +83,20 @@ def _is_phone_allowed(conversation_id: str) -> bool:
 
     Returns True if:
       - allowlist is empty (no restriction)
-      - conversation_id doesn't look like a WhatsApp phone (UUIDs,
-        AgentBench test sessions, anything containing non-digit
-        chars after stripping the JID suffix)
+      - conversation_id não parece ser um telefone WhatsApp (UUID puro,
+        sessão de AgentBench, etc — após extrair dígitos sobram menos
+        de 10)
       - normalized phone matches any entry in the allowlist
     """
     if not settings.PHONE_ALLOWLIST:
         return True
 
-    # Strip WhatsApp JID suffix; what remains should be pure digits if it's a phone.
-    raw = (conversation_id or '').split('@', 1)[0]
-    if not raw or not raw.isdigit():
-        return True  # UUIDs, test sessions, etc.
-
+    # Extrai dígitos; cobre prefixos do connector (ex: 'uazapi-5575998510965'),
+    # JID WhatsApp ('5575998510965@s.whatsapp.net'), e variantes.
     normalized = _normalize_phone(conversation_id)
+    if len(normalized) < 10:
+        return True  # UUIDs, test sessions, IDs internos — não é telefone
+
     for allowed in settings.PHONE_ALLOWLIST:
         if _normalize_phone(allowed) == normalized:
             return True

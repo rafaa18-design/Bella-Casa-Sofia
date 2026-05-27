@@ -1259,7 +1259,6 @@ function ChatScreen({ token, dark, c, onToggleTheme }: {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [attachedFile, setAttachedFile] = useState<AttachedFile | null>(null);
-  const [testPhone, setTestPhone] = useState("");
   const conversationId = useRef(uuid());
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -1470,32 +1469,6 @@ function ChatScreen({ token, dark, c, onToggleTheme }: {
             }}>
               Agent
             </span>
-          </div>
-
-          {/* Phone input for testing */}
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ fontSize: 11, color: c.textTertiary, whiteSpace: "nowrap" }}>Nº teste:</span>
-            <input
-              type="text"
-              value={testPhone}
-              onChange={(e) => {
-                setTestPhone(e.target.value);
-                conversationId.current = e.target.value || uuid();
-                setMessages([]);
-              }}
-              placeholder="vazio = UUID isolado"
-              style={{
-                fontSize: 12,
-                padding: "4px 8px",
-                borderRadius: 8,
-                border: `1px solid ${c.border}`,
-                background: c.inputBg,
-                color: c.text,
-                width: 130,
-                fontFamily: "inherit",
-                outline: "none",
-              }}
-            />
           </div>
 
           {/* Right: buttons */}
