@@ -90,6 +90,21 @@ async def refresh_prompt():
     }
 
 
+@prompt_router.get('/debug-personalizacao')
+async def debug_personalizacao():
+    """Diagnóstico: verifica se a personalização está sendo lida do banco."""
+    manager = get_prompt_manager()
+    personalizacao = await manager._get_personalizacao()
+    base = manager._fallback
+    has_placeholder = '{{gestor_personalizacao}}' in base
+    return {
+        'personalizacao_text': personalizacao or '(vazio)',
+        'personalizacao_len': len(personalizacao),
+        'base_has_placeholder': has_placeholder,
+        'base_len': len(base),
+    }
+
+
 @prompt_router.get('/current')
 async def get_current_prompt():
     """Get the current prompt being used."""
