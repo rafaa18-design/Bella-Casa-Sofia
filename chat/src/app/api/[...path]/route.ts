@@ -60,9 +60,9 @@ async function proxy(request: NextRequest, params: { path: string[] }) {
   const headers = new Headers(request.headers);
   headers.delete("host");
 
-  // Always inject a fresh server-side token. The client doesn't authenticate.
   const isLoginPath = path.startsWith("auth/login");
-  if (!isLoginPath) {
+  const authEnabled = process.env.BACKEND_AUTH_ENABLED === "true";
+  if (!isLoginPath && authEnabled) {
     try {
       const token = await getToken();
       headers.set("authorization", `Bearer ${token}`);
@@ -91,7 +91,7 @@ async function proxy(request: NextRequest, params: { path: string[] }) {
   try {
     let res = await fetch(url, init);
     // On 401, force-refresh the token once and retry
-    if (res.status === 401 && !isLoginPath) {
+    if (res.status === 401 && !isLoginPath && authEnabled) {
       cachedToken = null;
       cachedExp = 0;
       const token = await getToken();
