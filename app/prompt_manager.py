@@ -81,19 +81,14 @@ class PromptManager:
         personalizacao = await self._get_personalizacao()
         return compile_prompt(base, gestor_personalizacao=personalizacao)
 
+    def set_personalizacao(self, text: str) -> None:
+        """Atualiza a personalização do gestor em memória."""
+        self._personalizacao = text
+        logger.info(f'Personalizacao atualizada em memoria ({len(text)} chars)')
+
     async def _get_personalizacao(self) -> str:
-        """Fetch manager personalization from Redis."""
-        try:
-            redis = await get_redis()
-            if redis is None:
-                return ''
-            key = f'{settings.AGENT_NAME}:personalizacao'
-            value = await redis.get(key)
-            if value:
-                return value.decode('utf-8') if isinstance(value, bytes) else value
-        except Exception as e:
-            logger.warning(f'Personalizacao not available: {e}')
-        return ''
+        """Retorna a personalização do gestor (armazenada em memória)."""
+        return getattr(self, '_personalizacao', '')
 
     def get_prompt_sync(self) -> str:
         """Synchronous version of get_prompt for non-async contexts.
