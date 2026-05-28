@@ -76,6 +76,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f'Agendador não iniciado: {e}')
 
+    from app.config import settings as _settings
+    _al = _settings.PHONE_ALLOWLIST
+    if '__parse_error__' in _al:
+        logger.error('PHONE_ALLOWLIST com formato inválido — fail-closed ativo')
+    else:
+        logger.info(
+            'PHONE_ALLOWLIST carregada: %d entradas%s',
+            len(_al),
+            ' (sem restrição: atende todos)' if not _al else '',
+        )
+
     logger.info('Application startup complete')
 
     yield

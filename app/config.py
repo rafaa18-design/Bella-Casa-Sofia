@@ -1,6 +1,9 @@
 """Application configuration."""
 
-from pydantic_settings import BaseSettings
+import json
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -37,8 +40,26 @@ class Settings(BaseSettings):
     # Scopes required to create tokens via /auth/token endpoint
     AUTH_ADMIN_SCOPES: list[str] = ['admin', 'tokens:create']
 
-    # Phone allowlist (empty = allow all; set to restrict agent to specific numbers)
-    PHONE_ALLOWLIST: list[str] = []
+    # Phone allowlist (string crua do env). Aceita JSON `["7581475058", ...]`,
+    # CSV `7581475058,7191452106`, newline-separated ou um número solto.
+    # Use a property PHONE_ALLOWLIST (lista normalizada) — nunca o raw.
+    PHONE_ALLOWLIST_RAW: str = Field(default='', alias='PHONE_ALLOWLIST')
+
+    @property
+    def PHONE_ALLOWLIST(self) -> list[str]:
+        raw = (self.PHONE_ALLOWLIST_RAW or '').strip()
+        if not raw:
+            return []
+        if raw.startswith('['):
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    return [str(x).strip() for x in parsed if str(x).strip()]
+            except json.JSONDecodeError:
+                # Fail-closed: sentinel que NUNCA casa com phone real → tudo bloqueado
+                return ['__parse_error__']
+        parts = [p.strip() for p in raw.replace('\n', ',').replace(';', ',').split(',')]
+        return [p for p in parts if p]
 
     # /reset command via WhatsApp (disabled by default for production)
     RESET_COMMAND_ENABLED: bool = False
@@ -236,11 +257,12 @@ class Settings(BaseSettings):
     # ==========================================================================
     SHUTDOWN_TIMEOUT: int = 30  # seconds to wait for in-flight requests
 
-    model_config = {
-        'env_file': '.env',
-        'env_file_encoding': 'utf-8',
-        'extra': 'ignore',
-    }
+    model_config = SettingsConfigDict(
+        env_file='.env',
+        env_file_encoding='utf-8',
+        extra='ignore',
+        populate_by_name=True,
+    )
 
 
 settings = Settings()

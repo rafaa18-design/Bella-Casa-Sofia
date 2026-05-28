@@ -383,9 +383,9 @@ async def _handle_webhook(request: Request, background_tasks: BackgroundTasks):
     if not phone or not text:
         return {'status': 'ignored'}
 
-    # Allowlist de números para testes controlados
-    # Defina PHONE_ALLOWLIST=["5561..."] no Railway para limitar quem o bot responde
-    if settings.PHONE_ALLOWLIST and phone not in settings.PHONE_ALLOWLIST:
+    # Allowlist de números (normaliza ambos os lados — strip código de país e 9o dígito)
+    from app.routes.agentbench import _is_phone_allowed
+    if settings.PHONE_ALLOWLIST and not _is_phone_allowed(phone):
         logger.info(f'Número {phone} fora da allowlist — ignorado')
         return {'status': 'not_in_allowlist'}
 
