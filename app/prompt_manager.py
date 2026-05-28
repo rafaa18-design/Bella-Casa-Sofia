@@ -82,20 +82,15 @@ class PromptManager:
         return compile_prompt(base, gestor_personalizacao=personalizacao)
 
     async def _get_personalizacao(self) -> str:
-        """Fetch manager personalization text from config table."""
+        """Fetch manager personalization from Redis."""
         try:
-            from sqlalchemy import text as sa_text
-            from app.db.engine import async_session
-            async with async_session() as session:
-                result = await session.execute(
-                    sa_text("SELECT value FROM config WHERE key = 'sofiaPersonalizacao'")
-                )
-                row = result.fetchone()
-                if row:
-                    value = row[0]
-                    if isinstance(value, dict):
-                        return value.get('text', '')
-                    return str(value) if value else ''
+            redis = await get_redis()
+            if redis is None:
+                return ''
+            key = f'{settings.AGENT_NAME}:personalizacao'
+            value = await redis.get(key)
+            if value:
+                return value.decode('utf-8') if isinstance(value, bytes) else value
         except Exception as e:
             logger.warning(f'Personalizacao not available: {e}')
         return ''

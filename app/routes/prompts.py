@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from app.config import settings
 from app.observability import get_logger
 from app.prompt_manager import get_prompt_manager
+from app.storage import get_redis
 
 logger = get_logger(__name__)
 
@@ -88,6 +89,25 @@ async def refresh_prompt():
         'message': 'Prompt refreshed',
         'prompt_length': len(prompt),
     }
+
+
+@prompt_router.post('/personalizacao')
+async def set_personalizacao(request: Request):
+    """Recebe personalização do gestor e salva no Redis."""
+    try:
+        data = await request.json()
+        text = data.get('text', '')
+        redis = await get_redis()
+        if redis is None:
+            raise HTTPException(status_code=503, detail='Redis unavailable')
+        key = f'{settings.AGENT_NAME}:personalizacao'
+        await redis.set(key, text)
+        logger.info(f'Personalizacao atualizada ({len(text)} chars)')
+        return JSONResponse(content={'status': 'success', 'len': len(text)})
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @prompt_router.get('/debug-personalizacao')
