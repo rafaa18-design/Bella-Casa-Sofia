@@ -30,7 +30,6 @@ from app.config import settings
 from app.prompt_manager import get_agent_instructions_sync
 from app.runtime import RetryAgentRun, RunContext, StopAgentRun, ToolRegistry
 from app.tools import (
-    agendar_visita,
     distribuir_vendedora,
     registrar_lead,
     rotear_cidade,
@@ -116,7 +115,6 @@ def get_tools_registry() -> ToolRegistry:
         verificar_horario,
         registrar_lead,
         distribuir_vendedora,
-        agendar_visita,
         transferir_vendedora,
     ]
 
