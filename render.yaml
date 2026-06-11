@@ -1,0 +1,45 @@
+# Render Blueprint — Sofia (Bella Casa IA Leads)
+# Runtime Python nativo com uv. Usa o repositório inteiro (inclui catalogo/produtos.json).
+# Docs: https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: bella-casa-sofia
+    runtime: python
+    plan: free                      # troque para "starter" se quiser evitar o sleep do free
+    region: oregon
+    branch: rafael                  # ajuste para a branch que vai deployar
+    buildCommand: "pip install uv && uv sync --frozen"
+    startCommand: "uv run uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13.4"
+      # ---- Identidade (não secreto) ----
+      - key: MODULE_ID
+        value: bella-casa-sofia
+      - key: AGENT_NAME
+        value: sofia
+      - key: AGENT_PROMPT_NAME
+        value: sofia
+      - key: MODEL_PROVIDER
+        value: openai
+      - key: DEFAULT_MODEL
+        value: gpt-5-mini
+      # ---- Segredos: defina no painel do Render (sync:false não vaza no git) ----
+      - key: DATABASE_URL          # URL do Neon (Postgres)
+        sync: false
+      - key: POSTGRES_URL          # mesma URL do Neon (alguns trechos usam este nome)
+        sync: false
+      - key: REDIS_URL             # Upstash Redis (free) — recomendado
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: UAZAPI_URL
+        sync: false
+      - key: UAZAPI_TOKEN
+        sync: false
+      - key: FIREBASE_ADMIN_TOKEN
+        sync: false
+      - key: JWT_SECRET
+        sync: false
