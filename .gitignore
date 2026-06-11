@@ -22,8 +22,9 @@ wheels/
 .claude/
 .serena/
 
-# uv
+# uv — ignora locks em geral, mas versiona o uv.lock (necessário para o deploy reproduzível)
 *.lock
+!uv.lock
 
 # ruff
 .ruff_cache/
