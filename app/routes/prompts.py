@@ -90,6 +90,34 @@ async def refresh_prompt():
     }
 
 
+@prompt_router.post('/personalizacao')
+async def set_personalizacao(request: Request):
+    """Recebe personalização do gestor e armazena em memória."""
+    try:
+        data = await request.json()
+        text = data.get('text', '')
+        manager = get_prompt_manager()
+        manager.set_personalizacao(text)
+        return JSONResponse(content={'status': 'success', 'len': len(text)})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@prompt_router.get('/debug-personalizacao')
+async def debug_personalizacao():
+    """Diagnóstico: verifica se a personalização está sendo lida do banco."""
+    manager = get_prompt_manager()
+    personalizacao = await manager._get_personalizacao()
+    base = manager._fallback
+    has_placeholder = '{{gestor_personalizacao}}' in base
+    return {
+        'personalizacao_text': personalizacao or '(vazio)',
+        'personalizacao_len': len(personalizacao),
+        'base_has_placeholder': has_placeholder,
+        'base_len': len(base),
+    }
+
+
 @prompt_router.get('/current')
 async def get_current_prompt():
     """Get the current prompt being used."""

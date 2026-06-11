@@ -9,6 +9,7 @@ from app.tools.bella_casa import (
     verificar_cliente,
     verificar_horario,
 )
+from app.tools.consulta_catalogo import consultar_catalogo
 from app.tools.formatar_contexto import formatar_contexto_completo, formatar_contexto_state
 
 __all__ = [
@@ -18,6 +19,7 @@ __all__ = [
     "registrar_lead",
     "distribuir_vendedora",
     "agendar_visita",
+    "consultar_catalogo",
     "transferir_vendedora",
     "formatar_contexto_state",
     "formatar_contexto_completo",

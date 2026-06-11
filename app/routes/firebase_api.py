@@ -1,12 +1,30 @@
-"""Rotas internas da API Firebase — chamadas pelas tools da Sofia."""
+"""Rotas internas /api/firebase/* — backend Postgres (substitui Firestore).
+
+O prefixo /api/firebase foi mantido para não quebrar app/tools/bella_casa.py.
+"""
+
+from __future__ import annotations
+
 import logging
 import os
-from datetime import datetime
+import secrets
+from datetime import datetime, timedelta, timezone
 
+import bcrypt
 from fastapi import APIRouter, Header, HTTPException
-from google.cloud import firestore
-from google.oauth2 import service_account
 from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db import (
+    Conversation,
+    Lead,
+    Message,
+    Reminder,
+    RoundRobinControl,
+    Seller,
+    async_session,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -15,28 +33,46 @@ router = APIRouter(prefix='/api/firebase', tags=['firebase'])
 INTERNAL_TOKEN = os.getenv('FIREBASE_ADMIN_TOKEN', '')
 
 
-def _check_token(authorization: str | None):
+def _check_token(authorization: str | None) -> None:
     if not authorization or authorization != f'Bearer {INTERNAL_TOKEN}':
         raise HTTPException(status_code=401, detail='Unauthorized')
 
 
-def _get_db():
-    credentials = service_account.Credentials.from_service_account_info({
-        'type': 'service_account',
-        'project_id': os.getenv('FIREBASE_ADMIN_PROJECT_ID'),
-        'private_key': os.getenv('FIREBASE_ADMIN_PRIVATE_KEY', '').replace('\\n', '\n'),
-        'client_email': os.getenv('FIREBASE_ADMIN_CLIENT_EMAIL'),
-        'token_uri': 'https://oauth2.googleapis.com/token',
-    })
-    return firestore.Client(
-        project=os.getenv('FIREBASE_ADMIN_PROJECT_ID'),
-        credentials=credentials,
-    )
+def _timeline_to_db(v: str) -> str:
+    return 'trinta_dias' if v == '30_dias' else v
+
+
+def _timeline_from_db(v: str) -> str:
+    return '30_dias' if v == 'trinta_dias' else v
+
+
+def _lead_to_dict(lead: Lead, seller_name: str = '') -> dict:
+    return {
+        'id': lead.id,
+        'phone': lead.phone,
+        'name': lead.name,
+        'city': lead.city,
+        'routingType': lead.routing_type,
+        'product': lead.product,
+        'purchasePurpose': lead.purchase_purpose,
+        'purchaseTimeline': _timeline_from_db(lead.purchase_timeline),
+        'ambientSize': lead.ambient_size or '',
+        'assignedSeller': lead.assigned_seller_id or '',
+        'sellerName': seller_name,
+        'isRecurring': lead.is_recurring,
+        'status': lead.status,
+        'visitDate': lead.visit_date.isoformat() if lead.visit_date else None,
+        'visitReminderSent': lead.visit_reminder_sent,
+        'createdAt': lead.created_at.isoformat(),
+        'updatedAt': lead.updated_at.isoformat(),
+        'language': lead.language,
+    }
 
 
 # ---------------------------------------------------------------------------
 # Leads
 # ---------------------------------------------------------------------------
+
 
 class LeadPayload(BaseModel):
     phone: str
@@ -65,34 +101,69 @@ class VisitPayload(BaseModel):
 
 
 @router.get('/leads/by-phone/{phone}')
-async def get_lead_by_phone(
-    phone: str,
-    authorization: str | None = Header(default=None),
-):
+async def get_lead_by_phone(phone: str, authorization: str | None = Header(default=None)):
     _check_token(authorization)
-    db = _get_db()
-    docs = db.collection('leads').where('phone', '==', phone).limit(1).stream()
-    for doc in docs:
-        data = doc.to_dict()
-        seller_doc = db.collection('sellers').document(data.get('assignedSeller', '')).get()
-        seller_name = seller_doc.to_dict().get('name', '') if seller_doc.exists else ''
-        return {**data, 'id': doc.id, 'sellerName': seller_name}
-    raise HTTPException(status_code=404, detail='Lead not found')
+    async with async_session() as s:
+        stmt = select(Lead).where(Lead.phone == phone).limit(1)
+        lead = (await s.execute(stmt)).scalar_one_or_none()
+        if not lead:
+            raise HTTPException(status_code=404, detail='Lead not found')
+        seller_name = ''
+        if lead.assigned_seller_id:
+            seller = await s.get(Seller, lead.assigned_seller_id)
+            seller_name = seller.name if seller else ''
+        return _lead_to_dict(lead, seller_name)
 
 
 @router.post('/leads')
-async def create_lead(
-    payload: LeadPayload,
-    authorization: str | None = Header(default=None),
-):
+async def create_lead(payload: LeadPayload, authorization: str | None = Header(default=None)):
     _check_token(authorization)
-    db = _get_db()
-    now = datetime.utcnow()
-    data = payload.model_dump()
-    data['createdAt'] = now
-    data['updatedAt'] = now
-    ref = db.collection('leads').add(data)
-    return {'id': ref[1].id}
+    async with async_session() as s:
+        lead = Lead(
+            id=secrets.token_urlsafe(12),
+            phone=payload.phone,
+            name=payload.name,
+            city=payload.city,
+            routing_type=payload.routingType,
+            product=payload.product,
+            purchase_purpose=payload.purchasePurpose,
+            purchase_timeline=_timeline_to_db(payload.purchaseTimeline),
+            ambient_size=payload.ambientSize or None,
+            is_recurring=payload.isRecurring,
+            status=payload.status,
+            visit_reminder_sent=payload.visitReminderSent,
+            language=payload.language,
+        )
+        s.add(lead)
+        await s.commit()
+        return {'id': lead.id}
+
+
+async def _next_seller_round_robin(s: AsyncSession) -> str:
+    control = await s.get(RoundRobinControl, 'control')
+    if control is None:
+        control = RoundRobinControl(id='control', next_seller_idx=0, seller_order=[])
+        s.add(control)
+        await s.flush()
+
+    order: list[str] = list(control.seller_order)
+    if not order:
+        active = await s.execute(
+            select(Seller.id).where(Seller.is_active.is_(True)).order_by(Seller.created_at)
+        )
+        order = [r[0] for r in active.all()]
+        if not order:
+            raise HTTPException(status_code=409, detail='Nenhuma vendedora ativa cadastrada.')
+
+    idx = control.next_seller_idx % len(order)
+    assigned = order[idx]
+    control.seller_order = order
+    control.next_seller_idx = (idx + 1) % len(order)
+
+    seller = await s.get(Seller, assigned)
+    if seller:
+        seller.total_leads_assigned += 1
+    return assigned
 
 
 @router.post('/leads/{lead_id}/assign')
@@ -102,30 +173,17 @@ async def assign_lead(
     authorization: str | None = Header(default=None),
 ):
     _check_token(authorization)
-    db = _get_db()
+    async with async_session() as s:
+        seller_id = payload.sellerId or await _next_seller_round_robin(s)
 
-    if payload.sellerId:
-        seller_id = payload.sellerId
-    else:
-        # Round-robin
-        control_ref = db.collection('roundRobin').document('control')
-        control = control_ref.get().to_dict()
-        sellers = control['sellers']
-        idx = control['currentIndex']
-        seller_id = sellers[idx]
-        next_idx = (idx + 1) % len(sellers)
-        control_ref.update({'currentIndex': next_idx})
-        seller_ref = db.collection('sellers').document(seller_id)
-        seller_doc = seller_ref.get().to_dict()
-        seller_ref.update({'totalLeadsAssigned': seller_doc.get('totalLeadsAssigned', 0) + 1})
+        lead = await s.get(Lead, lead_id)
+        if not lead:
+            raise HTTPException(status_code=404, detail='Lead not found')
+        lead.assigned_seller_id = seller_id
 
-    db.collection('leads').document(lead_id).update({
-        'assignedSeller': seller_id,
-        'updatedAt': datetime.utcnow(),
-    })
-
-    seller = db.collection('sellers').document(seller_id).get().to_dict()
-    return {'sellerId': seller_id, 'sellerName': seller.get('name', '')}
+        seller = await s.get(Seller, seller_id)
+        await s.commit()
+        return {'sellerId': seller_id, 'sellerName': seller.name if seller else ''}
 
 
 @router.post('/leads/{lead_id}/schedule-visit')
@@ -135,96 +193,73 @@ async def schedule_visit(
     authorization: str | None = Header(default=None),
 ):
     _check_token(authorization)
-    db = _get_db()
-    from datetime import timedelta, timezone as tz
+    visit_dt = datetime.strptime(
+        f'{payload.visitDate} {payload.visitTime}', '%d/%m/%Y %H:%M'
+    ).replace(tzinfo=timezone.utc)
+    logger.info('schedule_visit: lead=%s date=%s time=%s', lead_id, payload.visitDate, payload.visitTime)
 
-    visit_dt = datetime.strptime(f"{payload.visitDate} {payload.visitTime}", '%d/%m/%Y %H:%M')
-    logger.info(f"schedule_visit: lead={lead_id} date={payload.visitDate} time={payload.visitTime}")
-
-    # Verifica conflitos com intervalo de 30 minutos (exclui o próprio lead no reagendamento)
-    try:
+    async with async_session() as s:
+        # Conflito ±30min no mesmo dia (exclui o próprio lead)
         day_start = visit_dt.replace(hour=0, minute=0, second=0, microsecond=0)
         day_end = visit_dt.replace(hour=23, minute=59, second=59)
-        existing = db.collection('leads').where('visitDate', '>=', day_start).where('visitDate', '<=', day_end).stream()
-        for doc in existing:
-            if doc.id == lead_id:
-                continue  # Ignora o próprio lead no reagendamento
-            data = doc.to_dict()
-            existing_dt = data.get('visitDate')
-            if existing_dt:
-                if hasattr(existing_dt, 'tzinfo') and existing_dt.tzinfo is not None:
-                    existing_dt = existing_dt.replace(tzinfo=None)
-                diff = abs((visit_dt - existing_dt).total_seconds()) / 60
-                if diff < 30:
-                    conflict_time = existing_dt.strftime('%H:%M')
-                    suggested = (visit_dt + timedelta(minutes=30)).strftime('%H:%M')
-                    return {
-                        'success': False,
-                        'conflict_message': (
-                            f'Já temos uma visita agendada próxima às {conflict_time}. '
-                            f'O próximo horário disponível seria às {suggested}.'
-                        )
-                    }
-    except Exception as e:
-        logger.warning(f"schedule_visit: conflict check failed (skipping): {e}")
+        existing = await s.execute(
+            select(Lead).where(
+                Lead.visit_date >= day_start,
+                Lead.visit_date <= day_end,
+                Lead.id != lead_id,
+            )
+        )
+        for other in existing.scalars():
+            if other.visit_date is None:
+                continue
+            diff = abs((visit_dt - other.visit_date).total_seconds()) / 60
+            if diff < 30:
+                conflict_time = other.visit_date.strftime('%H:%M')
+                suggested = (visit_dt + timedelta(minutes=30)).strftime('%H:%M')
+                return {
+                    'success': False,
+                    'conflict_message': (
+                        f'Já temos uma visita agendada próxima às {conflict_time}. '
+                        f'O próximo horário disponível seria às {suggested}.'
+                    ),
+                }
 
-    reminder_dt = visit_dt.replace(hour=19, minute=0, second=0) - timedelta(days=1)
+        lead = await s.get(Lead, lead_id)
+        if not lead:
+            raise HTTPException(status_code=404, detail='Lead not found')
+        lead.status = 'agendado'
+        lead.visit_date = visit_dt
 
-    db.collection('leads').document(lead_id).update({
-        'status': 'agendado',
-        'visitDate': visit_dt,
-        'visitTime': payload.visitTime,
-        'updatedAt': datetime.utcnow(),
-    })
+        reminder_dt = visit_dt.replace(hour=19, minute=0, second=0) - timedelta(days=1)
+        existing_reminder = (
+            await s.execute(select(Reminder).where(Reminder.lead_id == lead_id).limit(1))
+        ).scalar_one_or_none()
 
-    # Atualiza reminder existente (reagendamento) ou cria novo
-    existing_reminders = list(
-        db.collection('reminders').where('leadId', '==', lead_id).stream()
-    )
-    reminder_data = {
-        'leadId': lead_id,
-        'phone': payload.phone,
-        'leadName': payload.leadName,
-        'visitDate': visit_dt,
-        'reminderScheduledFor': reminder_dt,
-        'sent': False,
-    }
-    if existing_reminders:
-        existing_reminders[0].reference.update(reminder_data)
-        logger.info(f"schedule_visit: reminder atualizado para lead={lead_id}")
-    else:
-        db.collection('reminders').add(reminder_data)
-        logger.info(f"schedule_visit: reminder criado para lead={lead_id}")
+        if existing_reminder:
+            existing_reminder.phone = payload.phone
+            existing_reminder.lead_name = payload.leadName
+            existing_reminder.visit_date = visit_dt
+            existing_reminder.reminder_scheduled_for = reminder_dt
+            existing_reminder.sent = False
+        else:
+            s.add(
+                Reminder(
+                    id=secrets.token_urlsafe(12),
+                    lead_id=lead_id,
+                    phone=payload.phone,
+                    lead_name=payload.leadName,
+                    visit_date=visit_dt,
+                    reminder_scheduled_for=reminder_dt,
+                )
+            )
 
-    logger.info(f"schedule_visit: agendado com sucesso lead={lead_id}")
-    return {'success': True}
+        await s.commit()
+        return {'success': True}
 
 
 # ---------------------------------------------------------------------------
-# Sellers — cadastro e exclusão
+# Sellers
 # ---------------------------------------------------------------------------
-
-_firebase_admin_app = None
-
-
-def _get_admin_app():
-    """Inicializa o Firebase Admin SDK (singleton)."""
-    global _firebase_admin_app
-    import firebase_admin
-    from firebase_admin import credentials as fb_creds
-    if _firebase_admin_app is None:
-        cred = fb_creds.Certificate({
-            'type': 'service_account',
-            'project_id': os.getenv('FIREBASE_ADMIN_PROJECT_ID'),
-            'private_key': os.getenv('FIREBASE_ADMIN_PRIVATE_KEY', '').replace('\\n', '\n'),
-            'client_email': os.getenv('FIREBASE_ADMIN_CLIENT_EMAIL'),
-            'token_uri': 'https://oauth2.googleapis.com/token',
-        })
-        try:
-            _firebase_admin_app = firebase_admin.get_app('sellers')
-        except ValueError:
-            _firebase_admin_app = firebase_admin.initialize_app(cred, name='sellers')
-    return _firebase_admin_app
 
 
 class SellerPayload(BaseModel):
@@ -234,135 +269,92 @@ class SellerPayload(BaseModel):
 
 
 @router.post('/sellers')
-async def create_seller(
-    payload: SellerPayload,
-    authorization: str | None = Header(default=None),
-):
-    """Cadastra nova vendedora: cria no Firebase Auth, Firestore e round-robin."""
+async def create_seller(payload: SellerPayload, authorization: str | None = Header(default=None)):
+    """Cadastra vendedora no Postgres com senha temporária bcrypt."""
     _check_token(authorization)
-    from firebase_admin import auth as fb_auth
-    import secrets
+    email = payload.email.strip().lower()
+    async with async_session() as s:
+        existing = (
+            await s.execute(select(Seller).where(Seller.email == email))
+        ).scalar_one_or_none()
+        if existing:
+            raise HTTPException(status_code=409, detail='E-mail já cadastrado.')
 
-    app = _get_admin_app()
-    db = _get_db()
-
-    # 1. Cria usuário no Firebase Auth com senha temporária
-    temp_password = secrets.token_urlsafe(12)
-    try:
-        user = fb_auth.create_user(
-            email=payload.email,
-            display_name=payload.name,
-            password=temp_password,
-            app=app,
+        temp_password = secrets.token_urlsafe(9)
+        password_hash = bcrypt.hashpw(temp_password.encode(), bcrypt.gensalt(12)).decode()
+        seller = Seller(
+            id=secrets.token_urlsafe(12),
+            name=payload.name,
+            email=email,
+            password_hash=password_hash,
+            whatsapp_number=payload.whatsappNumber,
+            is_active=True,
+            total_leads_assigned=0,
         )
-    except fb_auth.EmailAlreadyExistsError:
-        raise HTTPException(status_code=409, detail='E-mail já cadastrado no Firebase Auth.')
-    except Exception as e:
-        logger.error(f'create_seller: erro ao criar usuário no Auth: {e}')
-        raise HTTPException(status_code=500, detail=f'Erro ao criar usuário: {e}')
+        s.add(seller)
 
-    # 2. Gera link de redefinição de senha para a vendedora
-    try:
-        reset_link = fb_auth.generate_password_reset_link(payload.email, app=app)
-    except Exception:
-        reset_link = ''
-
-    # 3. Cria documento no Firestore
-    now = datetime.utcnow()
-    seller_data = {
-        'name': payload.name,
-        'email': payload.email,
-        'whatsappNumber': payload.whatsappNumber,
-        'isActive': True,
-        'totalLeadsAssigned': 0,
-        'createdAt': now,
-    }
-    seller_ref = db.collection('sellers').document(user.uid)
-    seller_ref.set(seller_data)
-
-    # 4. Adiciona ao round-robin
-    try:
-        control_ref = db.collection('roundRobin').document('control')
-        control = control_ref.get()
-        if control.exists:
-            current = control.to_dict().get('sellers', [])
-            if user.uid not in current:
-                control_ref.update({'sellers': current + [user.uid]})
+        control = await s.get(RoundRobinControl, 'control')
+        if control is None:
+            s.add(RoundRobinControl(id='control', next_seller_idx=0, seller_order=[seller.id]))
         else:
-            control_ref.set({'sellers': [user.uid], 'currentIndex': 0})
-    except Exception as e:
-        logger.warning(f'create_seller: erro ao atualizar round-robin: {e}')
+            order = list(control.seller_order)
+            if seller.id not in order:
+                order.append(seller.id)
+                control.seller_order = order
 
-    logger.info(f'create_seller: vendedora criada uid={user.uid} email={payload.email}')
-    return {
-        'id': user.uid,
-        'name': payload.name,
-        'email': payload.email,
-        'resetLink': reset_link,
-    }
+        await s.commit()
+        logger.info('create_seller: vendedora criada id=%s email=%s', seller.id, email)
+        return {
+            'id': seller.id,
+            'name': seller.name,
+            'email': seller.email,
+            'tempPassword': temp_password,
+        }
 
 
 @router.delete('/sellers/{seller_id}')
-async def delete_seller(
-    seller_id: str,
-    authorization: str | None = Header(default=None),
-):
-    """Exclui vendedora do Firebase Auth, Firestore e round-robin."""
+async def delete_seller(seller_id: str, authorization: str | None = Header(default=None)):
     _check_token(authorization)
-    from firebase_admin import auth as fb_auth
+    async with async_session() as s:
+        seller = await s.get(Seller, seller_id)
+        if not seller:
+            raise HTTPException(status_code=404, detail='Seller not found')
+        await s.delete(seller)
 
-    app = _get_admin_app()
-    db = _get_db()
+        control = await s.get(RoundRobinControl, 'control')
+        if control is not None:
+            order = [sid for sid in control.seller_order if sid != seller_id]
+            control.seller_order = order
+            control.next_seller_idx = (
+                0 if control.next_seller_idx >= len(order) else control.next_seller_idx
+            )
 
-    # 1. Remove do Firebase Auth
-    try:
-        fb_auth.delete_user(seller_id, app=app)
-    except fb_auth.UserNotFoundError:
-        logger.warning(f'delete_seller: usuário {seller_id} não encontrado no Auth (continuando)')
-    except Exception as e:
-        logger.error(f'delete_seller: erro ao remover do Auth: {e}')
-        raise HTTPException(status_code=500, detail=f'Erro ao remover usuário: {e}')
-
-    # 2. Remove do Firestore
-    db.collection('sellers').document(seller_id).delete()
-
-    # 3. Remove do round-robin
-    try:
-        control_ref = db.collection('roundRobin').document('control')
-        control = control_ref.get()
-        if control.exists:
-            sellers = control.to_dict().get('sellers', [])
-            if seller_id in sellers:
-                sellers.remove(seller_id)
-                new_idx = min(control.to_dict().get('currentIndex', 0), max(len(sellers) - 1, 0))
-                control_ref.update({'sellers': sellers, 'currentIndex': new_idx})
-    except Exception as e:
-        logger.warning(f'delete_seller: erro ao atualizar round-robin: {e}')
-
-    logger.info(f'delete_seller: vendedora removida uid={seller_id}')
-    return {'success': True}
+        await s.commit()
+        logger.info('delete_seller: vendedora removida id=%s', seller_id)
+        return {'success': True}
 
 
 # ---------------------------------------------------------------------------
-# Conversations — chamado internamente pelo webhook
+# Conversations — usados pelo webhook
 # ---------------------------------------------------------------------------
+
 
 async def load_conversation_history(phone: str, limit: int = 20) -> list[dict]:
-    """Carrega o histórico de conversa do Firestore para reconstruir contexto após reinício."""
+    """Carrega histórico recente da conversa do Postgres."""
     try:
-        db = _get_db()
-        docs = list(
-            db.collection('conversations').where('phone', '==', phone).limit(1).stream()
-        )
-        if not docs:
-            return []
-        messages = docs[0].to_dict().get('messages', [])
-        return [
-            {'role': msg['role'], 'content': msg['content']}
-            for msg in messages[-limit:]
-        ]
+        async with async_session() as s:
+            stmt = (
+                select(Message)
+                .join(Conversation, Conversation.lead_id == Message.lead_id)
+                .where(Conversation.phone == phone)
+                .order_by(Message.timestamp.desc())
+                .limit(limit)
+            )
+            rows = list((await s.execute(stmt)).scalars())
+            rows.reverse()
+            return [{'role': m.role, 'content': m.content} for m in rows]
     except Exception as e:
-        logger.error(f'Erro ao carregar histórico do Firestore: {e}')
+        logger.error('Erro ao carregar histórico do Postgres: %s', e)
         return []
 
 
@@ -373,38 +365,27 @@ async def save_conversation_message(
     assistant_message: str,
     stage: str = 'qualificacao',
 ) -> None:
-    """Salva as mensagens da conversa no Firestore (chamado pelo webhook)."""
+    """Persiste o par user/assistant. Stage nunca regride (encerrado é terminal)."""
+    if not lead_id:
+        logger.warning('save_conversation_message: lead_id vazio, ignorando')
+        return
     try:
-        db = _get_db()
-        now = datetime.utcnow()
-        messages_to_add = [
-            {'role': 'user', 'content': user_message, 'timestamp': now},
-            {'role': 'assistant', 'content': assistant_message, 'timestamp': now},
-        ]
+        async with async_session() as s:
+            conv = await s.get(Conversation, lead_id)
+            if conv is None:
+                conv = Conversation(lead_id=lead_id, phone=phone, stage=stage)
+                s.add(conv)
+            else:
+                final_stage = (
+                    'encerrado' if stage == 'encerrado' or conv.stage == 'encerrado' else stage
+                )
+                conv.stage = final_stage
 
-        docs = list(
-            db.collection('conversations').where('phone', '==', phone).limit(1).stream()
-        )
-
-        if docs:
-            current_stage = docs[0].to_dict().get('stage', 'qualificacao')
-            # Stage nunca regride: se já está encerrado, não volta para qualificacao
-            final_stage = 'encerrado' if (stage == 'encerrado' or current_stage == 'encerrado') else stage
-            update_data: dict = {
-                'messages': firestore.ArrayUnion(messages_to_add),
-                'stage': final_stage,
-                'updatedAt': now,
-            }
-            if lead_id:
-                update_data['leadId'] = lead_id
-            db.collection('conversations').document(docs[0].id).update(update_data)
-        else:
-            db.collection('conversations').add({
-                'phone': phone,
-                'leadId': lead_id,
-                'messages': messages_to_add,
-                'stage': stage,
-                'updatedAt': now,
-            })
+            now = datetime.now(timezone.utc)
+            s.add(Message(lead_id=lead_id, role='user', content=user_message, timestamp=now))
+            s.add(
+                Message(lead_id=lead_id, role='assistant', content=assistant_message, timestamp=now)
+            )
+            await s.commit()
     except Exception as e:
-        logger.error(f'Erro ao salvar conversa no Firestore: {e}')
+        logger.error('Erro ao salvar conversa no Postgres: %s', e)

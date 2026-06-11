@@ -42,3 +42,7 @@ node_modules/
 # Misc
 .DS_Store
 *.log
+
+# Catálogo: ignora os PDFs/fotos pesados, mas versiona a base estruturada
+catalogo/*
+!catalogo/produtos.json

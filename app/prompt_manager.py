@@ -62,22 +62,33 @@ class PromptManager:
         cached_prompt = await self._get_prompt_from_redis()
         if cached_prompt:
             logger.debug('Prompt loaded from Redis cache')
-            return cached_prompt
+            base = cached_prompt
+        else:
+            # 2. Fetch from Langfuse
+            prompt = self._fetch_from_langfuse()
 
-        # 2. Fetch from Langfuse
-        prompt = self._fetch_from_langfuse()
+            # 3. Cache in Redis
+            if prompt:
+                await self._set_prompt_in_redis(prompt)
+                logger.info('Prompt fetched from Langfuse and cached in Redis')
+                base = prompt
+            else:
+                # 4. Fallback
+                logger.debug(f'Using fallback prompt for {self._prompt_name}')
+                base = self._fallback
 
-        # 3. Cache in Redis
-        if prompt:
-            await self._set_prompt_in_redis(prompt)
-            logger.info('Prompt fetched from Langfuse and cached in Redis')
-            return prompt
+        # 5. Inject manager personalization from DB
+        personalizacao = await self._get_personalizacao()
+        return compile_prompt(base, gestor_personalizacao=personalizacao)
 
-        # 4. Fallback
-        logger.debug(
-            f'Using fallback prompt for {self._prompt_name}'
-        )
-        return self._fallback
+    def set_personalizacao(self, text: str) -> None:
+        """Atualiza a personalização do gestor em memória."""
+        self._personalizacao = text
+        logger.info(f'Personalizacao atualizada em memoria ({len(text)} chars)')
+
+    async def _get_personalizacao(self) -> str:
+        """Retorna a personalização do gestor (armazenada em memória)."""
+        return getattr(self, '_personalizacao', '')
 
     def get_prompt_sync(self) -> str:
         """Synchronous version of get_prompt for non-async contexts.
