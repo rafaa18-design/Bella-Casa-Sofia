@@ -44,6 +44,9 @@ logger = logging.getLogger(__name__)
 # Max times the same tool can be called in a single turn
 _MAX_SAME_TOOL_PER_TURN = 3
 
+# Resposta de segurança: jamais devolver vazio ("(sem resposta)") ao cliente
+_EMPTY_FALLBACK = 'Desculpa, pode repetir, por favor?'
+
 
 # ---------------------------------------------------------------------------
 # Model & Tools Configuration
@@ -392,6 +395,12 @@ async def run_agent_loop(
                     'content': 'Responda ao cliente agora com base nos dados já obtidos.',
                 })
                 continue
+            if not content:
+                logger.warning(
+                    'Empty content returned to user at iteration %d — using fallback',
+                    iteration,
+                )
+                content = _EMPTY_FALLBACK
             return AgentResponse(
                 content=content,
                 messages=messages,
@@ -549,7 +558,7 @@ async def run_agent_loop(
         f'Agent loop reached max iterations ({max_iterations})'
     )
     return AgentResponse(
-        content=message.content or '',
+        content=(message.content or '') or _EMPTY_FALLBACK,
         messages=messages,
         input_tokens=total_input_tokens,
         output_tokens=total_output_tokens,
