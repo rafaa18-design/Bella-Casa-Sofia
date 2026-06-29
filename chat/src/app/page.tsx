@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
 import ReactMarkdown, { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
 
 const API = "/api";
 
@@ -970,7 +971,7 @@ function ChatMessage({ msg, c, mdComponents }: { msg: Message; c: ColorTokens; m
               {msg.content && <div style={{ whiteSpace: "pre-wrap" }}>{msg.content}</div>}
             </div>
           ) : (
-            <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
+            <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={mdComponents}>
               {msg.content}
             </ReactMarkdown>
           )}
