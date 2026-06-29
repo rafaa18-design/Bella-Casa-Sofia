@@ -18,6 +18,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
@@ -46,6 +47,27 @@ _MAX_SAME_TOOL_PER_TURN = 3
 
 # Resposta de segurança: jamais devolver vazio ("(sem resposta)") ao cliente
 _EMPTY_FALLBACK = 'Desculpa, pode repetir, por favor?'
+
+
+def _format_product_lines(text: str) -> str:
+    """Garante 1 produto por linha em listas do catálogo, independente do modelo.
+
+    O Gemini costuma achatar as quebras de linha num parágrafo só. Como cada
+    produto termina num preço (R$ ...), inserimos uma quebra após cada preço
+    quando vem um novo item/pergunta (texto iniciando em maiúscula). Só age
+    quando há 2+ preços, para não afetar mensagens normais.
+    """
+    if not text or text.count('R$') < 2:
+        return text
+    # Quebra após o ":" de abertura (ex.: "Temos essas opções de sofá:")
+    text = re.sub(r':[ \t]+(?=[A-ZÀ-Ú])', ':\n', text, count=1)
+    # Quebra após cada preço (com ou sem "(varia conforme o tecido)")
+    text = re.sub(
+        r'(R\$[ \t]?[\d.,]+(?:[ \t]*\(varia conforme o tecido\))?)[ \t]+(?=[A-ZÀ-Ú])',
+        r'\1\n',
+        text,
+    )
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -401,6 +423,7 @@ async def run_agent_loop(
                     iteration,
                 )
                 content = _EMPTY_FALLBACK
+            content = _format_product_lines(content)
             return AgentResponse(
                 content=content,
                 messages=messages,
