@@ -155,14 +155,19 @@ def consultar_catalogo(run_context: RunContext, categoria: str = "", busca: str 
         alvo_nome = _strip(p["nome"])
         alvo_mat = _strip(p.get("material", ""))
         score = 0
-        if termos:
-            for t in termos:
-                if t in alvo_nome:
-                    score += 3
-                elif t in alvo_mat:
-                    score += 1
-            if score == 0:
-                continue
+        matched = False
+        for t in termos:
+            if t in alvo_nome:
+                score += 3
+                matched = True
+            elif t in alvo_mat:
+                score += 1
+                matched = True
+        # Exclui só quando NÃO há categoria e os termos não bateram em nada.
+        # Com categoria válida, o termo extra (ex: "3 lugares") vira só ranking,
+        # nunca zera uma categoria inteira.
+        if termos and not matched and not cat_alvo:
+            continue
         candidatos.append((score, p))
 
     if not candidatos:
