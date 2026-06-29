@@ -97,6 +97,12 @@ def _agrupar(variantes: list[dict]) -> dict:
         if mat and mat not in materiais:
             materiais.append(mat)
 
+    # Linha pronta para o cliente (uma por produto): "Nome, material curto, preço"
+    mat_curto = (materiais[0].rstrip(".") if materiais else "")
+    if len(mat_curto) > 45:
+        mat_curto = mat_curto[:45].rsplit(" ", 1)[0] + "..."
+    linha = f"{nome}, {mat_curto}, {preco_texto}" if mat_curto else f"{nome}, {preco_texto}"
+
     return {
         "nome": nome,
         "categoria": categoria,
@@ -104,6 +110,7 @@ def _agrupar(variantes: list[dict]) -> dict:
         "tamanhos": tamanhos[:3],
         "materiais": materiais[:3],
         "variacoes": len(variantes),
+        "linha": linha,
     }
 
 
@@ -169,7 +176,14 @@ def consultar_catalogo(run_context: RunContext, categoria: str = "", busca: str 
         score_grupo[p["nome"]] = max(score_grupo.get(p["nome"], 0), score)
 
     ordenados = sorted(grupos.items(), key=lambda kv: -score_grupo[kv[0]])
-    resultados = [_agrupar(v) for _, v in ordenados[:5]]
+    resultados = [_agrupar(v) for _, v in ordenados[:3]]
 
-    out = {"resultados": resultados, "total_encontrado": len(grupos)}
+    # Lista pronta para enviar ao cliente: uma linha por produto, com quebras reais.
+    texto_lista = "\n".join(r["linha"] for r in resultados)
+
+    out = {
+        "resultados": resultados,
+        "texto_lista": texto_lista,
+        "total_encontrado": len(grupos),
+    }
     return json.dumps(out, ensure_ascii=False)
