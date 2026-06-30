@@ -59,12 +59,14 @@ def _format_product_lines(text: str) -> str:
     """
     if not text or text.count('R$') < 2:
         return text
+    # Usa quebra DUPLA (\n\n): markdown e WhatsApp ambos renderizam como linha nova,
+    # sem depender de plugins de soft-break no front.
     # Quebra após o ":" de abertura (ex.: "Temos essas opções de sofá:")
-    text = re.sub(r':[ \t]+(?=[A-ZÀ-Ú])', ':\n', text, count=1)
-    # Quebra após cada preço (com ou sem "(varia conforme o tecido)")
+    text = re.sub(r':[ \t]+(?=[A-ZÀ-Ú])', ':\n\n', text, count=1)
+    # Quebra após cada preço (com ou sem parêntese tipo "(conforme o tecido)")
     text = re.sub(
         r'(R\$[ \t]?[\d.,]+(?:[ \t]*\([^)]*\))?)[ \t]+(?=[A-ZÀ-Ú])',
-        r'\1\n',
+        r'\1\n\n',
         text,
     )
     return text
