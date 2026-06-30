@@ -71,6 +71,21 @@ def _medida_str(m: dict) -> str:
     return f"{fmt(c)} x {fmt(a)} x {fmt(p)} m (C x A x P)"
 
 
+_PALAVRAS_MINUSCULAS = {"de", "da", "do", "e", "com", "para", "em", "a", "o"}
+
+
+def _titulo(nome: str) -> str:
+    """'SOFÁ DE CANTO ABBA' -> 'Sofá de Canto Abba' (mais legível que CAIXA ALTA)."""
+    palavras = nome.lower().split()
+    out = []
+    for i, w in enumerate(palavras):
+        if i > 0 and w in _PALAVRAS_MINUSCULAS:
+            out.append(w)
+        else:
+            out.append(w.capitalize())
+    return " ".join(out)
+
+
 def _agrupar(variantes: list[dict]) -> dict:
     """Agrupa variantes do mesmo nome num único produto para o cliente."""
     nome = variantes[0]["nome"]
@@ -81,7 +96,7 @@ def _agrupar(variantes: list[dict]) -> dict:
     por_tecido = any(v.get("tipo_preco") == "faixa" for v in variantes)
 
     if por_tecido:
-        preco_texto = f"de {_money(pmin)} a {_money(pmax)} (varia conforme o tecido)"
+        preco_texto = f"de {_money(pmin)} a {_money(pmax)} (conforme o tecido)"
     elif pmin == pmax:
         preco_texto = _money(pmin)
     else:
@@ -98,10 +113,15 @@ def _agrupar(variantes: list[dict]) -> dict:
             materiais.append(mat)
 
     # Linha pronta para o cliente (uma por produto): "Nome, material curto, preço"
-    mat_curto = (materiais[0].rstrip(".") if materiais else "")
-    if len(mat_curto) > 45:
-        mat_curto = mat_curto[:45].rsplit(" ", 1)[0] + "..."
-    linha = f"{nome}, {mat_curto}, {preco_texto}" if mat_curto else f"{nome}, {preco_texto}"
+    mat_curto = (materiais[0] if materiais else "").strip().rstrip(" .,")
+    # Material pouco informativo (ex.: "avulsa") não ajuda o cliente — omite
+    if mat_curto.lower() in ("avulsa", "avulso", "avulsa.", ""):
+        mat_curto = ""
+    if len(mat_curto) > 40:
+        mat_curto = mat_curto[:40].rsplit(" ", 1)[0].rstrip(" .,") + "…"
+
+    nome_fmt = _titulo(nome)
+    linha = f"{nome_fmt}, {mat_curto}, {preco_texto}" if mat_curto else f"{nome_fmt}, {preco_texto}"
 
     return {
         "nome": nome,

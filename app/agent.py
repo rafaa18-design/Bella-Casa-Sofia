@@ -63,7 +63,7 @@ def _format_product_lines(text: str) -> str:
     text = re.sub(r':[ \t]+(?=[A-ZÀ-Ú])', ':\n', text, count=1)
     # Quebra após cada preço (com ou sem "(varia conforme o tecido)")
     text = re.sub(
-        r'(R\$[ \t]?[\d.,]+(?:[ \t]*\(varia conforme o tecido\))?)[ \t]+(?=[A-ZÀ-Ú])',
+        r'(R\$[ \t]?[\d.,]+(?:[ \t]*\([^)]*\))?)[ \t]+(?=[A-ZÀ-Ú])',
         r'\1\n',
         text,
     )
