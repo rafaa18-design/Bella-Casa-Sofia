@@ -209,6 +209,8 @@ def consultar_catalogo(run_context: RunContext, categoria: str = "", busca: str 
     out = {
         "resultados": resultados,
         "texto_lista": texto_lista,
+        "mostrados": len(resultados),
         "total_encontrado": len(grupos),
+        "tem_mais": len(grupos) > len(resultados),
     }
     return json.dumps(out, ensure_ascii=False)
