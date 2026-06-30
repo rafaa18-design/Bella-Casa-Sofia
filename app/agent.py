@@ -427,7 +427,10 @@ async def run_agent_loop(
                     iteration,
                 )
                 content = _EMPTY_FALLBACK
-            content = _format_product_lines(content)
+            # Espaçamento entre linhas só quando a resposta APRESENTA produtos
+            # (tool consultar_catalogo usada) — nunca no resto da conversa.
+            if 'consultar_catalogo' in tools_used:
+                content = _format_product_lines(content)
             return AgentResponse(
                 content=content,
                 messages=messages,
