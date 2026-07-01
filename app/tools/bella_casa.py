@@ -170,23 +170,26 @@ def verificar_horario(run_context: RunContext) -> str:
 async def registrar_lead(
     run_context: RunContext,
     name: str,
-    city: str,
     product: str,
-    purchase_timeline: str,
-    purchase_purpose: str,
+    city: str = "",
+    purchase_timeline: str = "pesquisando",
+    purchase_purpose: str = "casa_nova",
     language: str = "pt",
     ambient_size: str = "",
 ) -> str:
     """Registra o lead qualificado no banco de dados.
 
     O telefone do cliente é obtido automaticamente do contexto da conversa.
+    Só name e product são obrigatórios. Cidade, prazo e finalidade são
+    opcionais — preencha apenas se o cliente mencionar espontaneamente;
+    caso contrário, deixe nos valores padrão.
 
     Args:
         name: Nome do cliente.
-        city: Cidade do cliente.
         product: Produto desejado com detalhes.
-        purchase_timeline: 'imediato', '30_dias' ou 'pesquisando'.
-        purchase_purpose: 'casa_nova', 'reforma' ou 'troca'.
+        city: Cidade do cliente (opcional; vazio se não informada).
+        purchase_timeline: 'imediato', '30_dias' ou 'pesquisando' (padrão: pesquisando).
+        purchase_purpose: 'casa_nova', 'reforma' ou 'troca' (padrão: casa_nova).
         language: Idioma da conversa (pt, en, es).
         ambient_size: Metragem do ambiente (opcional).
     """
