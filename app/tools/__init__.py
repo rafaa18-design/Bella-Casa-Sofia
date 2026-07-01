@@ -3,6 +3,7 @@
 from app.tools.bella_casa import (
     agendar_visita,
     distribuir_vendedora,
+    enviar_foto_produto,
     registrar_lead,
     rotear_cidade,
     transferir_vendedora,
@@ -20,6 +21,7 @@ __all__ = [
     "distribuir_vendedora",
     "agendar_visita",
     "consultar_catalogo",
+    "enviar_foto_produto",
     "transferir_vendedora",
     "formatar_contexto_state",
     "formatar_contexto_completo",

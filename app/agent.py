@@ -33,6 +33,7 @@ from app.runtime import RetryAgentRun, RunContext, StopAgentRun, ToolRegistry
 from app.tools import (
     consultar_catalogo,
     distribuir_vendedora,
+    enviar_foto_produto,
     registrar_lead,
     rotear_cidade,
     transferir_vendedora,
@@ -146,6 +147,7 @@ def get_tools_registry() -> ToolRegistry:
         registrar_lead,
         distribuir_vendedora,
         consultar_catalogo,
+        enviar_foto_produto,
         transferir_vendedora,
     ]
 

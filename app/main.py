@@ -137,6 +137,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# --- Arquivos estáticos (fotos dos produtos) ---
+import os as _os
+
+from fastapi.staticfiles import StaticFiles
+
+_static_dir = _os.path.join(_os.path.dirname(__file__), "static")
+if _os.path.isdir(_static_dir):
+    app.mount("/static", StaticFiles(directory=_static_dir), name="static")
+
 # --- Routers ---
 app.include_router(agentbench_router)
 app.include_router(auth_router)

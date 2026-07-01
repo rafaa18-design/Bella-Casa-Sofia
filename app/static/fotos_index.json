@@ -1,0 +1,268 @@
+[
+  {
+    "slug": "aparador-chevron",
+    "nome": "Aparador Chevron",
+    "categoria": "aparador",
+    "foto": "fotos/aparador-chevron.jpg",
+    "descricao": "Aparador com gaveteiro em MDF laminado, com frente em marchetaria e corrediças leve toque (push open)."
+  },
+  {
+    "slug": "aparador-hera",
+    "nome": "Aparador Hera",
+    "categoria": "aparador",
+    "foto": "fotos/aparador-hera.jpg",
+    "descricao": "Aparador com tampo e prateleira em MDF laminado ou laqueado."
+  },
+  {
+    "slug": "banco-brisa",
+    "nome": "Banco Brisa",
+    "categoria": "banco",
+    "foto": "fotos/banco-brisa.jpg",
+    "descricao": "Banco em madeira maciça, tampo embutido em MDF laminado."
+  },
+  {
+    "slug": "banco-tanger",
+    "nome": "Banco Tânger",
+    "categoria": "banco",
+    "foto": "fotos/banco-tanger.jpg",
+    "descricao": "Banco em madeira maciça, com assento ripado e almofadas."
+  },
+  {
+    "slug": "bar-amsterdam",
+    "nome": "Bar Amsterdam",
+    "categoria": "bar",
+    "foto": "fotos/bar-amsterdam.jpg",
+    "descricao": "Carrinho com estrutura em metal laqueado, tampo e prateleira em MDF laminado ou laqueado."
+  },
+  {
+    "slug": "bar-rene",
+    "nome": "Bar René",
+    "categoria": "bar",
+    "foto": "fotos/bar-rene.jpg",
+    "descricao": "Carrinho com estrutura em metal laqueado, tampo e prateleira em MDF laminado ou laqueado."
+  },
+  {
+    "slug": "bar-salinas",
+    "nome": "Bar Salinas",
+    "categoria": "bar",
+    "foto": "fotos/bar-salinas.jpg",
+    "descricao": "Bar com tampo em MDF laminado."
+  },
+  {
+    "slug": "buffet-cravo",
+    "nome": "Buffet Cravo",
+    "categoria": "buffet",
+    "foto": "fotos/buffet-cravo.jpg",
+    "descricao": "Buffet em MDF laminado com estrutura em metal laqueado."
+  },
+  {
+    "slug": "cadeira-clara",
+    "nome": "Cadeira Clara",
+    "categoria": "cadeira",
+    "foto": "fotos/cadeira-clara.jpg",
+    "descricao": "Cadeira em madeira maciça, com encosto em MDF laminado."
+  },
+  {
+    "slug": "castical-oiti",
+    "nome": "Castiçal Oiti",
+    "categoria": "castical",
+    "foto": "fotos/castical-oiti.jpg",
+    "descricao": "Castiçal em madeira maciça ou MDF laqueado."
+  },
+  {
+    "slug": "conjunto-flora",
+    "nome": "Conjunto Flora",
+    "categoria": "conjunto",
+    "foto": "fotos/conjunto-flora.jpg",
+    "descricao": "Mesa com tampo em vidro Fusing colado em detalhe de alumínio."
+  },
+  {
+    "slug": "espelho-acorde",
+    "nome": "Espelho Acorde",
+    "categoria": "espelho",
+    "foto": "fotos/espelho-acorde.jpg",
+    "descricao": "Espelho em MDF laminado ou laqueado, prateleira em madeira maciça ou MDF laqueado e pendurador em pedra natural, madeira ou MDF laqueado."
+  },
+  {
+    "slug": "mesa-lateral-tule",
+    "nome": "Mesa Lateral Tule",
+    "categoria": "mesa",
+    "foto": "fotos/mesa-lateral-tule.jpg",
+    "descricao": "Mesa com tampo e base em madeira maciça ou MDF laqueado, anel em metal laqueado."
+  },
+  {
+    "slug": "mesa-de-centro-brasilia",
+    "nome": "Mesa de centro Brasília",
+    "categoria": "mesa",
+    "foto": "fotos/mesa-de-centro-brasilia.jpg",
+    "descricao": "Mesa com tampo em MDF laminado ou laqueado e pés em metal laqueado."
+  },
+  {
+    "slug": "mesa-de-centro-dalia",
+    "nome": "Mesa de centro Dália",
+    "categoria": "mesa",
+    "foto": "fotos/mesa-de-centro-dalia.jpg",
+    "descricao": "Mesa com tampo inferior e superior com opções em MDF laminado ou laqueado."
+  },
+  {
+    "slug": "mesa-de-centro-jabuti",
+    "nome": "Mesa de centro Jabuti",
+    "categoria": "mesa",
+    "foto": "fotos/mesa-de-centro-jabuti.jpg",
+    "descricao": "Para as opções com tampo de pedra a altura cresce 2 centímetros, sendo que a mesa média aumenta 5 centímetros no comprimento e largura."
+  },
+  {
+    "slug": "mesa-de-centro-lagom",
+    "nome": "Mesa de centro Lagom",
+    "categoria": "mesa",
+    "foto": "fotos/mesa-de-centro-lagom.jpg",
+    "descricao": "Mesa com tampo de vidro e detalhe em metal laqueado, base em madeira maciça ou acabamento laqueado."
+  },
+  {
+    "slug": "mesa-de-centro-lira",
+    "nome": "Mesa de centro Lira",
+    "categoria": "mesa",
+    "foto": "fotos/mesa-de-centro-lira.jpg",
+    "descricao": "Mesa em MDF laminado ou laqueado, com compartimento acessado por tampa com puxador em pedra natural, madeira maciça ou MDF laqueado."
+  },
+  {
+    "slug": "mesa-de-centro-malta",
+    "nome": "Mesa de centro Malta",
+    "categoria": "mesa",
+    "foto": "fotos/mesa-de-centro-malta.jpg",
+    "descricao": "Mesa com tampo e base em MDF laminado ou laqueado."
+  },
+  {
+    "slug": "mesa-de-centro-orla",
+    "nome": "Mesa de centro Orla",
+    "categoria": "mesa",
+    "foto": "fotos/mesa-de-centro-orla.jpg",
+    "descricao": "Mesa em MDF laminado ou laqueado, com pés em madeira maciça."
+  },
+  {
+    "slug": "mesa-de-centro-regia",
+    "nome": "Mesa de centro Régia",
+    "categoria": "mesa",
+    "foto": "fotos/mesa-de-centro-regia.jpg",
+    "descricao": "Mesa com tampo em madeira maciça ou MDF laqueado."
+  },
+  {
+    "slug": "mesa-de-centro-valsa",
+    "nome": "Mesa de centro Valsa",
+    "categoria": "mesa",
+    "foto": "fotos/mesa-de-centro-valsa.jpg",
+    "descricao": "Mesa composta por três tamanhos, as mesas (A) e (B) possuem tampo em vidro com pintura central, haste metálica e base laqueada."
+  },
+  {
+    "slug": "mesa-de-jantar-colina",
+    "nome": "Mesa de jantar Colina",
+    "categoria": "mesa",
+    "foto": "fotos/mesa-de-jantar-colina.jpg",
+    "descricao": "Mesa com base em MDF laminado ou laqueado com detalhe em metal laqueado."
+  },
+  {
+    "slug": "mesa-lateral-alfa-beta-gama",
+    "nome": "Mesa lateral Alfa, Beta & Gama",
+    "categoria": "mesa",
+    "foto": "fotos/mesa-lateral-alfa-beta-gama.jpg",
+    "descricao": "A mesa lateral Alfa (B) possui estrutura metálica, haste com luminária e base em madeira maciça."
+  },
+  {
+    "slug": "mesa-lateral-baoba",
+    "nome": "Mesa lateral Baobá",
+    "categoria": "mesa",
+    "foto": "fotos/mesa-lateral-baoba.jpg",
+    "descricao": "A L P Mesa em madeira maciça ou em MDF laqueado."
+  },
+  {
+    "slug": "mesa-lateral-cedro",
+    "nome": "Mesa lateral Cedro",
+    "categoria": "mesa",
+    "foto": "fotos/mesa-lateral-cedro.jpg",
+    "descricao": "Mesa com tampo em MDF laminado ou laqueado, base ripada com acabamento em laca."
+  },
+  {
+    "slug": "mesa-lateral-ciclo",
+    "nome": "Mesa lateral Ciclo",
+    "categoria": "mesa",
+    "foto": "fotos/mesa-lateral-ciclo.jpg",
+    "descricao": "Mesa com tampo e base em madeira maciça ou MDF laqueado, com detalhe embutido no tampo em pedra natural."
+  },
+  {
+    "slug": "mesa-lateral-cristal",
+    "nome": "Mesa lateral Cristal",
+    "categoria": "mesa",
+    "foto": "fotos/mesa-lateral-cristal.jpg",
+    "descricao": "Bar com tampo em pedra natural, MDF laminado ou laqueado."
+  },
+  {
+    "slug": "mesa-lateral-dueto",
+    "nome": "Mesa lateral Dueto",
+    "categoria": "mesa",
+    "foto": "fotos/mesa-lateral-dueto.jpg",
+    "descricao": "Mesa em madeira maciça, tampo e haste lateral em metal laqueado."
+  },
+  {
+    "slug": "mesa-lateral-nolina",
+    "nome": "Mesa lateral Nolina",
+    "categoria": "mesa",
+    "foto": "fotos/mesa-lateral-nolina.jpg",
+    "descricao": "Mesa com tampo em madeira maciça, MDF laqueado ou texturizado."
+  },
+  {
+    "slug": "mesa-lateral-poty",
+    "nome": "Mesa lateral Poty",
+    "categoria": "mesa",
+    "foto": "fotos/mesa-lateral-poty.jpg",
+    "descricao": "Mesa com tampo em vidro Fusing ou madeira maciça com detalhe em metal laqueado."
+  },
+  {
+    "slug": "mesa-lateral-tango",
+    "nome": "Mesa lateral Tango",
+    "categoria": "mesa",
+    "foto": "fotos/mesa-lateral-tango.jpg",
+    "descricao": "Mesa com tampo disponível em pedra natural, madeira maciça ou MDF laqueado."
+  },
+  {
+    "slug": "mesa-lateral-topo",
+    "nome": "Mesa lateral Topo",
+    "categoria": "mesa",
+    "foto": "fotos/mesa-lateral-topo.jpg",
+    "descricao": "Mesa lateral da linha 2026, design contemporâneo e acabamento premium."
+  },
+  {
+    "slug": "mesa-lateral-trianon",
+    "nome": "Mesa lateral Trianon",
+    "categoria": "mesa",
+    "foto": "fotos/mesa-lateral-trianon.jpg",
+    "descricao": "Mesa com tampo e base de MDF laqueado e haste metálica laqueada."
+  },
+  {
+    "slug": "mesa-lateral-orbita",
+    "nome": "Mesa lateral Órbita",
+    "categoria": "mesa",
+    "foto": "fotos/mesa-lateral-orbita.jpg",
+    "descricao": "Mesa com tampo e base em madeira maciça ou MDF laqueado, com estrutura em metal laqueado e ponteira em madeira laqueada."
+  },
+  {
+    "slug": "poltrona-nuvem",
+    "nome": "Poltrona Nuvem",
+    "categoria": "poltrona",
+    "foto": "fotos/poltrona-nuvem.jpg",
+    "descricao": "Poltrona com estrutura em MDF revestida em tecido com rodapé de madeira maciça."
+  },
+  {
+    "slug": "puff-raia",
+    "nome": "Puff Raia",
+    "categoria": "puff",
+    "foto": "fotos/puff-raia.jpg",
+    "descricao": "Puff com estrutura em MDF revestido em tecido, rodapé e encosto em madeira maciça com detalhe em metal laqueado."
+  },
+  {
+    "slug": "puff-agata",
+    "nome": "Puff Ágata",
+    "categoria": "puff",
+    "foto": "fotos/puff-agata.jpg",
+    "descricao": "Puff com estrutura em MDF revestida em tecido com rodapé de madeira maciça."
+  }
+]

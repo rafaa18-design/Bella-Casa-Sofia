@@ -130,6 +130,8 @@ def _clean_response(text: str) -> str:
     if not text:
         return ''
 
+    # Remove markdown de imagem (![alt](url)) — no WhatsApp a foto vai separada
+    text = re.sub(r'!\[[^\]]*\]\([^)]*\)', '', text)
     # Remove negrito e itálico (**texto**, *texto*, __texto__, _texto_)
     text = re.sub(r'\*{1,3}([^*\n]+)\*{1,3}', r'\1', text)
     text = re.sub(r'_{1,2}([^_\n]+)_{1,2}', r'\1', text)

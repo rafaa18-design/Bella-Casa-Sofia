@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import unicodedata
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -14,6 +15,103 @@ logger = logging.getLogger(__name__)
 _port = os.getenv("PORT", "8000")
 FIREBASE_URL = os.getenv("FIREBASE_BASE_URL") or f"http://localhost:{_port}/api/firebase"
 FIREBASE_TOKEN = os.getenv("FIREBASE_ADMIN_TOKEN", "")
+
+# UazAPI (envio de mídia/foto ao cliente)
+UAZAPI_URL = os.getenv("UAZAPI_URL", "")
+UAZAPI_TOKEN = os.getenv("UAZAPI_TOKEN", "")
+# URL pública do próprio agente (para o WhatsApp buscar a imagem). Ex: https://...onrender.com
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+
+# Índice de fotos dos produtos (gerado por scripts/preparar_fotos.py)
+_FOTOS_INDEX_PATH = os.path.join(os.path.dirname(__file__), "..", "static", "fotos_index.json")
+
+
+def _load_fotos_index() -> list[dict]:
+    try:
+        with open(_FOTOS_INDEX_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"fotos_index indisponível: {e}")
+        return []
+
+
+_FOTOS = _load_fotos_index()
+logger.info(f"Fotos de produtos carregadas: {len(_FOTOS)}")
+
+
+def _norm_foto(s: str) -> str:
+    s = unicodedata.normalize("NFKD", s or "")
+    return "".join(c for c in s if not unicodedata.combining(c)).lower().strip()
+
+
+# Palavras genéricas de categoria — não servem para achar um MODELO específico
+_CAT_WORDS_FOTO = {
+    "mesa", "mesas", "sofa", "sofas", "cadeira", "cadeiras", "poltrona", "poltronas",
+    "aparador", "aparadores", "banco", "bancos", "bar", "bares", "buffet", "buffets",
+    "espelho", "espelhos", "conjunto", "conjuntos", "puff", "puffs", "banqueta",
+    "banquetas", "estante", "estantes", "castical", "lateral", "centro", "jantar",
+}
+
+# Palavras de preenchimento — ignoradas ao procurar um modelo específico
+_STOPWORDS_FOTO = {
+    "quero", "queria", "uma", "preciso", "gostaria", "procuro", "procurando",
+    "tenho", "interesse", "voces", "vcs", "ver", "algum", "alguma", "modelo",
+    "modelos", "opcao", "opcoes", "tipo", "sobre", "para", "com", "mais", "esse",
+    "essa", "aqui", "isso", "queiro", "buscando", "busco", "gostei", "olha",
+}
+
+
+def _achar_foto(query: str) -> dict | None:
+    """Encontra o produto fotografado que melhor casa com a busca (modelo ou categoria)."""
+    q = _norm_foto(query)
+    if not q or not _FOTOS:
+        return None
+    # 1) nome do produto contido na busca ou vice-versa (ex: "poltrona nuvem")
+    for p in _FOTOS:
+        n = _norm_foto(p["nome"])
+        if n in q or q in n:
+            return p
+    # 2) token ESPECÍFICO (nome de modelo, não palavra de categoria) bate com o nome
+    #    Ex: "mesa oslo" -> ignora "mesa", casa "oslo".
+    tem_especifico = False
+    for tok in q.split():
+        if len(tok) < 4 or tok in _CAT_WORDS_FOTO or tok in _STOPWORDS_FOTO:
+            continue
+        tem_especifico = True
+        for p in _FOTOS:
+            if tok in _norm_foto(p["nome"]):
+                return p
+    # 3) categoria — só se o cliente NÃO citou um modelo específico que não temos.
+    #    (Se pediu "mesa oslo" e não há Oslo, não mostramos outra mesa qualquer.)
+    if not tem_especifico:
+        for p in _FOTOS:
+            if p.get("categoria") and p["categoria"] in q:
+                return p
+    return None
+
+
+async def _send_media(number: str, file_url: str, caption: str = "") -> bool:
+    """Envia uma imagem ao cliente via UazAPI (POST /send/media)."""
+    token = UAZAPI_TOKEN.strip()
+    base = UAZAPI_URL.strip().rstrip("/")
+    if not base or not token:
+        logger.error("UazAPI não configurado para envio de mídia")
+        return False
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{base}/send/media",
+                headers={"token": token},
+                json={"number": number, "type": "image", "file": file_url, "text": caption},
+                timeout=20,
+            )
+        if resp.status_code not in (200, 201):
+            logger.error(f"_send_media status {resp.status_code}: {resp.text[:200]}")
+            return False
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"_send_media erro: {e}")
+        return False
 
 BAHIA_TZ = ZoneInfo("America/Bahia")
 
@@ -481,3 +579,53 @@ def transferir_vendedora(run_context: RunContext) -> str:
         "within_business_hours": is_open,
         "farewell": farewell,
     }))
+
+
+@tool
+async def enviar_foto_produto(run_context: RunContext, produto: str) -> str:
+    """Envia a foto de um produto ao cliente e retorna a descrição para você falar sobre ele.
+
+    Use quando o cliente demonstrar interesse em um tipo ou modelo de móvel que
+    tenha foto disponível. Passe o nome do modelo ou a categoria
+    (ex: "Poltrona Nuvem", "mesa de centro", "aparador").
+
+    Se retornar encontrada=false, NÃO há foto desse produto — nesse caso siga
+    normalmente com consultar_catalogo (lista com preços).
+
+    Se retornar encontrada=true:
+    - A foto já foi enviada ao cliente (no WhatsApp) OU virá no campo "foto_markdown".
+    - Apresente o produto com base no campo "descricao", pergunte o que o cliente
+      achou e diga que há mais modelos caso ele não goste.
+    - Se vier "foto_markdown" preenchido, inclua-o EXATAMENTE na sua mensagem (é a imagem).
+    - O preço desses produtos fica com a vendedora — não invente valor.
+    """
+    p = _achar_foto(produto)
+    if not p:
+        return '{"encontrada": false}'
+
+    slug = p["slug"]
+    if PUBLIC_BASE_URL:
+        url = f"{PUBLIC_BASE_URL}/static/fotos/{slug}.jpg"
+    else:
+        url = f"/static/fotos/{slug}.jpg"
+
+    conv = str(run_context.session_state.get("phone", ""))
+    so_digitos = conv.replace("+", "")
+    is_whatsapp = so_digitos.isdigit() and len(so_digitos) >= 10
+
+    foto_enviada = False
+    foto_markdown = ""
+    if is_whatsapp and PUBLIC_BASE_URL:
+        foto_enviada = await _send_media(conv, url)
+    else:
+        # Chat web (ou sem URL pública): devolve a imagem em markdown para renderizar
+        foto_markdown = f"![{p['nome']}]({url})"
+
+    out = {
+        "encontrada": True,
+        "nome": p["nome"],
+        "descricao": p.get("descricao", ""),
+        "foto_enviada": foto_enviada,
+        "foto_markdown": foto_markdown,
+    }
+    return json.dumps(out, ensure_ascii=False)
