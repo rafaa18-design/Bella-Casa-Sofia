@@ -467,9 +467,9 @@ def transferir_vendedora(run_context: RunContext) -> str:
         )
     else:
         farewell = (
-            f"{name_part}obrigada pelo contato com a Bella Casa! "
-            f"A {seller_name} vai assumir seu atendimento agora e te ajudar com tudo que precisar. "
-            f"Ate logo!"
+            f"{name_part}que bom te ajudar por aqui! "
+            f"Vou te passar agora para a {seller_name}, que vai cuidar de tudo com voce "
+            f"e fechar do jeitinho que voce quer. Ja ja ela fala com voce. Ate logo!"
         )
     run_context.session_state["farewell_message"] = farewell
 
